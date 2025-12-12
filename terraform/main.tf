@@ -1,34 +1,41 @@
-variable "repo_url" { type = string }
+# terraform/main.tf
 
-# 1. Install ArgoCD
+# 1. Install ArgoCD using Helm
 resource "helm_release" "argocd" {
   name             = "argocd"
   repository       = "https://argoproj.github.io/argo-helm"
   chart            = "argo-cd"
   namespace        = "argocd-system"
   create_namespace = true
-  version          = "5.46.0"
+  version          = "7.7.16"
 
-  # FIX: Use 'values' with yamlencode instead of 'set' blocks
   values = [
     yamlencode({
       server = {
         insecure = true
       }
+      configs = {
+        cm = {
+          "resource.customizations.ignoreDifferences.all" = "jsonPointers:\n  - /status"
+        }
+      }
     })
   ]
 }
 
-# 2. Create Teams/Namespaces (Platform vs Observability)
+# 2. Create Teams/Namespaces
 resource "kubernetes_namespace" "teams" {
   for_each = toset(["k8s-platform-system", "observability-prd", "astronomy-shop"])
-  metadata { name = each.key }
+  metadata {
+    name = each.key
+  }
 }
 
-# 3. Bootstrap the Root Application (The "App of Apps")
-resource "kubernetes_manifest" "argocd_root" {
+# 3. Bootstrap the Root Application
+resource "kubectl_manifest" "argocd_root" {
   depends_on = [helm_release.argocd]
-  manifest = {
+
+  yaml_body = yamlencode({
     apiVersion = "argoproj.io/v1alpha1"
     kind       = "Application"
     metadata = {
@@ -38,7 +45,7 @@ resource "kubernetes_manifest" "argocd_root" {
     spec = {
       project = "default"
       source = {
-        repoURL        = var.repo_url
+        repoURL        = var.repo_url # This now pulls from variables.tf -> terraform.tfvars
         targetRevision = "HEAD"
         path           = "k8s/apps"
       }
@@ -47,9 +54,12 @@ resource "kubernetes_manifest" "argocd_root" {
         namespace = "argocd-system"
       }
       syncPolicy = {
-        automated = { prune = true, selfHeal = true }
+        automated = {
+          prune    = true
+          selfHeal = true
+        }
         syncOptions = ["CreateNamespace=true"]
       }
     }
-  }
+  })
 }

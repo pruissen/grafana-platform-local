@@ -51,7 +51,7 @@ spec:
   source:
     repoURL: https://grafana.github.io/helm-charts
     chart: grafana
-    targetRevision: 6.61.1
+    targetRevision: 8.5.1 # Latest stable Grafana Chart (deploys Grafana v11.x)
     helm:
       valueFiles: ["../../values/grafana.yaml"]
   destination: { namespace: observability-prd, server: https://kubernetes.default.svc }

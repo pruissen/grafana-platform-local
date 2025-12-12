@@ -12,15 +12,10 @@ This project creates a local Multi-tenant Observability Platform using MicroK8s,
 ## Prerequisites
 - Ubuntu/Linux environment
 - `git`, `make`, `curl`, `screen` installed.
-- **Important**: You must commit this folder to a Git repo for ArgoCD to sync.
+- **Important**: You must manually initialize this folder as a git repository and commit the files before running the installation.
 
 ## Quick Start
 
-1. **Initialize Git**:
+1. **Launch Everything**:
    ```bash
-   git init
-   git add .
-   git commit -m "Initial commit"
-   # Add your remote origin
-   git remote add origin [https://github.com/YOUR_USER/YOUR_REPO.git](https://github.com/YOUR_USER/YOUR_REPO.git)
-   git push -u origin master
+   make all

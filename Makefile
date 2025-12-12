@@ -1,24 +1,33 @@
-.PHONY: all install-microk8s setup-git terraform-apply forward clean
+.PHONY: all install-microk8s tfvars terraform-plan terraform-apply forward clean remove-microk8s
 
+# Detect the git URL automatically
 REPO_URL ?= $(shell git config --get remote.origin.url)
 
-all: install-microk8s setup-git terraform-apply
+all: install-microk8s terraform-apply
 
 install-microk8s:
 	@echo "--- Installing MicroK8s ---"
 	sudo snap install microk8s --classic
 	sudo microk8s status --wait-ready
-	sudo microk8s enable dns helm3 storage ingress
+	@echo "--- Enabling Addons ---"
+	sudo microk8s enable dns
+	sudo microk8s enable helm3
+	sudo microk8s enable storage
 	sudo microk8s config > ~/.kube/config
 	sudo chmod 600 ~/.kube/config
 
-setup-git:
-	@echo "--- Checking Git Setup ---"
-	@if [ -z "$(REPO_URL)" ]; then echo "Error: No remote git URL found. Please 'git init' and 'git remote add origin ...' and push your code."; exit 1; fi
+# New Target: Generates the variable file automatically
+tfvars:
+	@echo "--- Generating terraform.tfvars ---"
+	@echo 'repo_url = "$(REPO_URL)"' > terraform/terraform.tfvars
 
-terraform-apply:
-	@echo "--- Bootstrapping with Terraform ---"
-	cd terraform && terraform init && terraform apply -var="repo_url=$(REPO_URL)" -auto-approve
+terraform-plan: tfvars
+	@echo "--- Generating Terraform Plan ---"
+	cd terraform && terraform init && terraform plan
+
+terraform-apply: tfvars
+	@echo "--- Applying Terraform (Interactive) ---"
+	cd terraform && terraform init && terraform apply
 
 forward:
 	@echo "--- Launching Port Forwards ---"
@@ -28,6 +37,12 @@ stop-forward:
 	@bash scripts/portforward.sh stop
 
 clean:
-	@echo "--- Destroying Environment ---"
+	@echo "--- Destroying Terraform Resources ---"
 	cd terraform && terraform destroy -auto-approve
-	sudo snap remove microk8s
+	rm -f terraform/terraform.tfvars
+
+remove-microk8s:
+	@echo "--- Completely Removing MicroK8s ---"
+	sudo microk8s stop
+	sudo snap remove microk8s --purge
+	rm -f ~/.kube/config
