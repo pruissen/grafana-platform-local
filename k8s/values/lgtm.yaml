@@ -1,47 +1,136 @@
 global:
   dnsService: "kube-dns"
+  clusterDomain: "cluster.local"
 
-# --------------------------------------------------------
-# 1. MIMIR
-# --------------------------------------------------------
+# ---------------------------------------------------------------------
+# 1. MIMIR (Metrics) - Fixed for Chart 5.8.0
+# ---------------------------------------------------------------------
 mimir:
   enabled: true
+  fullnameOverride: mimir
+  
+  # -- Disable bundled services
   minio: { enabled: false }
-  affinity: {} # Single-node support
-  structuredConfig:
-    blocks_storage:
-      s3:
-        endpoint: minio-storage.observability-prd.svc:9000
-        bucket_name: mimir-blocks
-        access_key_id: admin
-        secret_access_key: "${s3_secret_key}"
-        insecure: true
-    alertmanager_storage:
-      s3:
-        endpoint: minio-storage.observability-prd.svc:9000
-        bucket_name: mimir-ruler
-        access_key_id: admin
-        secret_access_key: "${s3_secret_key}"
-        insecure: true
-    memberlist:
-      bind_addr: ["0.0.0.0"]
-      bind_port: 7946
+  kafka: { enabled: false }
+  ingress: { enabled: false }
 
-# --------------------------------------------------------
-# 2. TEMPO
-# --------------------------------------------------------
+  # -- Structured Config (Correct method for chart)
+  structuredConfig:
+    # 1. GLOBAL S3 CONFIGURATION
+    common:
+      storage:
+        backend: s3
+        s3:
+          endpoint: minio-storage.observability-prd.svc:9000
+          bucket_name: mimir-blocks
+          access_key_id: admin
+          secret_access_key: "${s3_secret_key}"
+          insecure: true
+
+    # 2. STORAGE DEFINITIONS
+    # Explicitly defining backend ensures it inherits 'common' or uses the specific block
+    blocks_storage:
+      backend: s3
+      s3:
+        bucket_name: mimir-blocks
+        endpoint: minio-storage.observability-prd.svc:9000
+      tsdb:
+        dir: /data/tsdb
+
+    ruler_storage:
+      backend: s3
+      s3:
+        bucket_name: mimir-ruler
+        endpoint: minio-storage.observability-prd.svc:9000
+
+    alertmanager_storage:
+      backend: s3
+      s3:
+        bucket_name: mimir-ruler
+        endpoint: minio-storage.observability-prd.svc:9000
+
+    # Explicit duplication for usage_stats (Fixes the specific crash you saw)
+    usage_stats:
+      enabled: true
+    
+    usage_stats_storage:
+      backend: s3
+      s3:
+        bucket_name: mimir-usage-stats
+        endpoint: minio-storage.observability-prd.svc:9000
+        access_key_id: admin
+        secret_access_key: "${s3_secret_key}"
+        insecure: true
+
+    # 3. COMPONENT SETTINGS
+    limits:
+      max_cache_freshness: 10m
+      max_query_parallelism: 240
+      max_total_query_length: 12000h
+
+    server:
+      grpc_server_max_recv_msg_size: 104857600
+      grpc_server_max_send_msg_size: 104857600
+
+  # -- COMPONENTS (Diet Mode) --
+  ingester:
+    replicas: 1
+    resources: { requests: { memory: 128Mi, cpu: 100m }, limits: { memory: 512Mi } }
+    zoneAwareReplication: { enabled: false }
+
+  distributor:
+    replicas: 1
+    resources: { requests: { memory: 128Mi, cpu: 100m }, limits: { memory: 512Mi } }
+
+  store_gateway:
+    replicas: 1
+    resources: { requests: { memory: 128Mi, cpu: 100m }, limits: { memory: 512Mi } }
+    zoneAwareReplication: { enabled: false }
+
+  querier:
+    replicas: 1
+    resources: { requests: { memory: 128Mi, cpu: 100m }, limits: { memory: 512Mi } }
+
+  query_frontend:
+    replicas: 1
+    resources: { requests: { memory: 128Mi, cpu: 100m }, limits: { memory: 512Mi } }
+
+  query_scheduler:
+    replicas: 1
+    resources: { requests: { memory: 128Mi, cpu: 100m }, limits: { memory: 512Mi } }
+
+  ruler:
+    replicas: 1
+    resources: { requests: { memory: 128Mi, cpu: 100m }, limits: { memory: 512Mi } }
+
+  compactor:
+    replicas: 1
+    resources: { requests: { memory: 128Mi, cpu: 100m }, limits: { memory: 512Mi } }
+
+  alertmanager:
+    replicas: 1
+    resources: { requests: { memory: 32Mi, cpu: 10m } }
+    zoneAwareReplication: { enabled: false }
+
+  overrides_exporter:
+    replicas: 1
+    resources: { requests: { memory: 64Mi, cpu: 10m } }
+
+  # Disable heavy caches
+  chunks-cache: { enabled: false }
+  index-cache: { enabled: false }
+  metadata-cache: { enabled: false }
+  results-cache: { enabled: false }
+  rollout_operator: { enabled: false }
+
+# ---------------------------------------------------------------------
+# 2. TEMPO (Traces)
+# ---------------------------------------------------------------------
 tempo:
   enabled: true
-  fullnameOverride: tempo-distributed
+  fullnameOverride: tempo
   minio: { enabled: false }
-  # Disable Affinity
-  distributor: { affinity: {} }
-  ingester: { affinity: {} }
-  compactor: { affinity: {} }
-  querier: { affinity: {} }
-  queryFrontend: { affinity: {} }
-  gateway: { affinity: {} }
-  metricsGenerator: { affinity: {} }
+  ingress: { enabled: false }
   
   storage:
     trace:
@@ -53,17 +142,29 @@ tempo:
         secret_key: "${s3_secret_key}"
         insecure: true
 
-# --------------------------------------------------------
-# 3. LOKI
-# --------------------------------------------------------
+  # Empty maps to silence affinity table warnings
+  distributor: { affinity: {}, replicas: 1 }
+  ingester: { affinity: {}, replicas: 1 }
+  compactor: { affinity: {} }
+  querier: { affinity: {}, replicas: 1 }
+  queryFrontend: { affinity: {} }
+  gateway: { affinity: {} }
+  metricsGenerator: { affinity: {} }
+
+# ---------------------------------------------------------------------
+# 3. LOKI (Logs)
+# ---------------------------------------------------------------------
 loki:
   enabled: true
+  fullnameOverride: loki
   minio: { enabled: false }
-  distributor: { affinity: {} }
-  ingester: { affinity: {} }
-  querier: { affinity: {} }
-  queryFrontend: { affinity: {} }
+  ingress: { enabled: false }
+  
   loki:
+    commonConfig:
+      replication_factor: 1
+    storage:
+      type: filesystem
     structuredConfig:
       common:
         storage:
@@ -79,51 +180,36 @@ loki:
           s3:
             bucketnames: loki-ruler
 
-# --------------------------------------------------------
-# 4. GRAFANA ONCALL
-# --------------------------------------------------------
+  backend:
+    replicas: 1
+    resources: { requests: { memory: 128Mi }, limits: { memory: 512Mi } }
+  read:
+    replicas: 1
+    resources: { requests: { memory: 128Mi }, limits: { memory: 512Mi } }
+  write:
+    replicas: 1
+    resources: { requests: { memory: 128Mi }, limits: { memory: 512Mi } }
+
+# ---------------------------------------------------------------------
+# 4. GRAFANA ONCALL (DISABLED)
+# ---------------------------------------------------------------------
 grafana-oncall:
-  enabled: true
-  base_url: http://localhost:3000/grafana
-  
-  mariadb:
-    enabled: true
-    auth:
-      rootPassword: "${oncall_db_password}"
-      password: "${oncall_db_password}"
-  rabbitmq:
-    enabled: true
-    auth:
-      password: "${oncall_rabbitmq_password}"
-  redis:
-    enabled: true
-    auth:
-      password: "${oncall_redis_password}"
+  enabled: false
 
-  # Connect to local Grafana service
-  grafana:
-    url: "http://lgtm-distributed-grafana.observability-prd.svc:80"
-
-# --------------------------------------------------------
+# ---------------------------------------------------------------------
 # 5. GRAFANA
-# --------------------------------------------------------
+# ---------------------------------------------------------------------
 grafana:
   enabled: true
-  admin:
-    existingSecret: "grafana-admin-creds"
-    userKey: "admin-user"
-    passwordKey: "admin-password"
+  admin: { existingSecret: "grafana-admin-creds", userKey: "admin-user", passwordKey: "admin-password" }
+  ingress: { enabled: false }
+  plugins: [] 
   
-  plugins:
-    - grafana-oncall-app
-    
   grafana.ini:
     server:
       root_url: "%(protocol)s://%(domain)s:%(http_port)s/grafana/"
       serve_from_sub_path: true
-    plugins:
-      allow_loading_unsigned_plugins: "grafana-oncall-app"
-
+  
   datasources:
     datasources.yaml:
       apiVersion: 1

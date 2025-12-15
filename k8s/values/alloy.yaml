@@ -1,13 +1,15 @@
-controller:
-  type: deployment
-  replicas: 1
-
 alloy:
   configMap:
     content: |
+      // --------------------------------------------------------
+      // 1. RECEIVERS (Data Input)
+      // --------------------------------------------------------
+      
+      // OTLP: Accepts traces/metrics/logs from apps (like Astronomy Shop)
       otelcol.receiver.otlp "default" {
         grpc { endpoint = "0.0.0.0:4317" }
         http { endpoint = "0.0.0.0:4318" }
+        
         output {
           metrics = [otelcol.processor.batch.default.input]
           logs    = [otelcol.processor.batch.default.input]
@@ -15,6 +17,49 @@ alloy:
         }
       }
 
+      // --------------------------------------------------------
+      // 2. DISCOVERY & SCRAPING (Infrastructure Monitoring)
+      // --------------------------------------------------------
+      
+      discovery.kubernetes "k8s_pods" { role = "pod" }
+      discovery.kubernetes "k8s_nodes" { role = "node" }
+
+      // Scrape Kube State Metrics (KSM)
+      discovery.relabel "ksm" {
+        targets = discovery.kubernetes.k8s_pods.targets
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+          regex = "kube-state-metrics"
+          action = "keep"
+        }
+      }
+      
+      prometheus.scrape "ksm" {
+        targets    = discovery.relabel.ksm.output
+        frequency  = "15s"
+        job_name   = "kube-state-metrics"
+        forward_to = [prometheus.remote_write.mimir.receiver]
+      }
+
+      // Scrape Kubelet (Node Metrics)
+      prometheus.scrape "kubelet" {
+        targets    = discovery.kubernetes.k8s_nodes.targets
+        scheme     = "https"
+        job_name   = "kubelet"
+        frequency  = "15s"
+        
+        tls_config {
+          insecure_skip_verify = true
+        }
+        bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        
+        forward_to = [prometheus.remote_write.mimir.receiver]
+      }
+
+      // --------------------------------------------------------
+      // 3. PROCESSORS (Enrichment & Buffering)
+      // --------------------------------------------------------
+      
       otelcol.processor.batch "default" {
         output {
           metrics = [otelcol.processor.k8sattributes.default.input]
@@ -23,12 +68,14 @@ alloy:
         }
       }
 
+      // Adds Kubernetes metadata (Pod Name, Namespace, Node) to all telemetry
       otelcol.processor.k8sattributes "default" {
         extract {
-          metadata = ["k8s.pod.name", "k8s.pod.uid", "k8s.deployment.name", "k8s.namespace.name"]
+          metadata = ["k8s.pod.name", "k8s.pod.uid", "k8s.deployment.name", "k8s.namespace.name", "k8s.node.name"]
         }
         passthrough = false
         auth_type   = "serviceAccount"
+        
         output {
           metrics = [prometheus.remote_write.mimir.input]
           logs    = [loki.write.loki.input]
@@ -36,22 +83,34 @@ alloy:
         }
       }
 
-      // EXPORTERS: Pointing to LGTM Distributed Services
+      // --------------------------------------------------------
+      // 4. EXPORTERS (Sending to LGTM Stack)
+      // --------------------------------------------------------
+      
+      // Mimir (Metrics)
       prometheus.remote_write "mimir" {
         endpoint {
           url = "http://lgtm-distributed-mimir-distributor.observability-prd.svc:8080/api/v1/push"
         }
       }
 
+      // Loki (Logs)
       loki.write "loki" {
         endpoint {
           url = "http://lgtm-distributed-loki-distributor.observability-prd.svc:3100/loki/api/v1/push"
         }
       }
 
+      // Tempo (Traces)
       otelcol.exporter.otlp "tempo" {
         client {
           endpoint = "lgtm-distributed-tempo-distributor.observability-prd.svc:4317"
-          tls { insecure = true }
+          tls {
+            insecure = true
+          }
         }
       }
+
+controller:
+  type: deployment
+  replicas: 1
