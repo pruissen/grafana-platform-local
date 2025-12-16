@@ -1,0 +1,24 @@
+deploymentMode: SimpleScalable
+
+loki:
+  auth_enabled: false
+  commonConfig:
+    replication_factor: 1
+  storage:
+    type: s3
+    bucketNames:
+      chunks: loki-data
+      ruler: loki-ruler
+    s3:
+      endpoint: http://minio-enterprise.observability-prd.svc:9000
+      region: us-east-1
+      s3ForcePathStyle: true
+      insecure: true
+      accessKeyId: admin
+      secretAccessKey: "${s3_secret_key}"
+
+minio: { enabled: false }
+
+backend: { replicas: 1 }
+read: { replicas: 1 }
+write: { replicas: 1 }

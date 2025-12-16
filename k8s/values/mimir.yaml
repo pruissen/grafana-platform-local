@@ -1,0 +1,47 @@
+nameOverride: mimir
+
+# Global injection for S3 Secrets
+global:
+  extraEnvFrom:
+    - secretRef:
+        name: mimir-s3-credentials
+
+image:
+  repository: public.ecr.aws/bitnami/grafana-mimir
+  tag: latest
+
+minio: { enabled: false }
+
+structuredConfig:
+  common:
+    storage:
+      backend: s3
+      s3:
+        endpoint: minio-enterprise.observability-prd.svc:9000
+        bucket_name: mimir-blocks
+        insecure: true
+        region: us-east-1
+        s3forcepathstyle: true
+  
+  blocks_storage:
+    s3: { bucket_name: mimir-blocks }
+    tsdb: { dir: /data/tsdb }
+  
+  ruler_storage:
+    s3: { bucket_name: mimir-ruler }
+  
+  alertmanager_storage:
+    s3: { bucket_name: mimir-ruler }
+  
+  usage_stats: { enabled: false }
+
+# Diet Mode (Single Replicas)
+ingester: { replicas: 1, affinity: null }
+distributor: { replicas: 1, affinity: null }
+store_gateway: { replicas: 1, affinity: null }
+querier: { replicas: 1, affinity: null }
+query_frontend: { replicas: 1, affinity: null }
+ruler: { replicas: 1, affinity: null }
+compactor: { replicas: 1, affinity: null }
+alertmanager: { replicas: 1, affinity: null }
+overrides_exporter: { replicas: 1 }

@@ -1,0 +1,22 @@
+fullnameOverride: tempo
+
+storage:
+  trace:
+    backend: s3
+    s3:
+      bucket: tempo-traces
+      endpoint: minio-enterprise.observability-prd.svc:9000
+      access_key: admin
+      secret_key: "${s3_secret_key}"
+      insecure: true
+      force_path_style: true
+
+minio: { enabled: false }
+
+distributor: { replicas: 1 }
+ingester: { replicas: 1 }
+compactor: { replicas: 1 }
+querier: { replicas: 1 }
+queryFrontend: { replicas: 1 }
+gateway: { replicas: 1 }
+metricsGenerator: { replicas: 1 }
