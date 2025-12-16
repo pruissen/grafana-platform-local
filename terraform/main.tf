@@ -30,10 +30,10 @@ resource "random_password" "oncall_redis_password" {
 # 2. KUBERNETES SECRETS
 # -------------------------------------------------------------------
 
-# MinIO Admin Credentials
+# MinIO Admin Credentials (Renamed to 'lgtm-minio' for the bundled chart)
 resource "kubernetes_secret_v1" "minio_creds" {
   metadata {
-    name      = "minio-creds"
+    name      = "lgtm-minio"
     namespace = "observability-prd"
   }
   data = {
@@ -42,7 +42,7 @@ resource "kubernetes_secret_v1" "minio_creds" {
   }
 }
 
-# Mimir S3 Credentials (Global Secret for Environment Variables)
+# Mimir S3 Credentials (Global Secret)
 resource "kubernetes_secret_v1" "mimir_s3_creds" {
   metadata {
     name      = "mimir-s3-credentials"
@@ -54,7 +54,6 @@ resource "kubernetes_secret_v1" "mimir_s3_creds" {
   }
 }
 
-# Grafana Admin Credentials
 resource "kubernetes_secret_v1" "grafana_creds" {
   metadata {
     name      = "grafana-admin-creds"
@@ -66,7 +65,6 @@ resource "kubernetes_secret_v1" "grafana_creds" {
   }
 }
 
-# OnCall Secrets
 resource "kubernetes_secret_v1" "oncall_db_secret" {
   metadata {
     name      = "oncall-db-secret"
@@ -103,52 +101,6 @@ resource "kubernetes_secret_v1" "oncall_redis_secret" {
 # 3. INFRASTRUCTURE & APPS
 # -------------------------------------------------------------------
 
-# Job: Creates Buckets
-resource "kubectl_manifest" "bucket_creator" {
-  depends_on = [kubernetes_secret_v1.minio_creds]
-  yaml_body = yamlencode({
-    apiVersion = "batch/v1"
-    kind       = "Job"
-    metadata = {
-      name      = "minio-bucket-creator-v21"
-      namespace = "observability-prd"
-    }
-    spec = {
-      ttlSecondsAfterFinished = 300
-      template = {
-        spec = {
-          restartPolicy = "OnFailure"
-          containers = [{
-            name    = "mc"
-            image   = "quay.io/minio/mc:latest"
-            command = ["/bin/sh", "-c"]
-            env = [{
-              name = "MINIO_PASS"
-              valueFrom = {
-                secretKeyRef = {
-                  name = "minio-creds"
-                  key  = "rootPassword"
-                }
-              }
-            }]
-            args = [<<-EOT
-              until mc alias set myminio http://minio-storage.observability-prd.svc:9000 admin $MINIO_PASS; do echo "Waiting..."; sleep 5; done
-              mc mb myminio/mimir-blocks --ignore-existing
-              mc mb myminio/mimir-ruler  --ignore-existing
-              mc mb myminio/mimir-usage-stats --ignore-existing
-              mc mb myminio/tempo-traces --ignore-existing
-              mc mb myminio/loki-data    --ignore-existing
-              mc mb myminio/loki-ruler   --ignore-existing
-              echo "Buckets Created."
-            EOT
-            ]
-          }]
-        }
-      }
-    }
-  })
-}
-
 resource "helm_release" "argocd" {
   name       = "argocd"
   repository = "https://argoproj.github.io/argo-helm"
@@ -167,50 +119,6 @@ resource "helm_release" "argocd" {
   })]
 }
 
-# MinIO
-resource "kubectl_manifest" "minio" {
-  depends_on = [helm_release.argocd, kubernetes_secret_v1.minio_creds]
-  yaml_body = yamlencode({
-    apiVersion = "argoproj.io/v1alpha1"
-    kind       = "Application"
-    metadata = {
-      name      = "minio-storage"
-      namespace = "argocd-system"
-      finalizers = ["resources-finalizer.argocd.argoproj.io"]
-    }
-    spec = {
-      project = "default"
-      destination = {
-        server    = "https://kubernetes.default.svc"
-        namespace = "observability-prd"
-      }
-      syncPolicy = {
-        automated = {
-          prune    = true
-          selfHeal = true
-        }
-      }
-      source = {
-        repoURL        = "https://charts.min.io/"
-        chart          = "minio"
-        targetRevision = "5.0.14"
-        helm = {
-          parameters = [
-            { name = "mode", value = "standalone" },
-            { name = "existingSecret", value = "minio-creds" },
-            { name = "resources.requests.memory", value = "256Mi" },
-            { name = "resources.limits.memory", value = "1Gi" },
-            { name = "image.repository", value = "quay.io/minio/minio" },
-            { name = "image.tag", value = "latest" },
-            { name = "mcImage.repository", value = "quay.io/minio/mc" },
-            { name = "mcImage.tag", value = "latest" }
-          ]
-        }
-      }
-    }
-  })
-}
-
 resource "helm_release" "ksm" {
   name             = "kube-state-metrics"
   repository       = "https://prometheus-community.github.io/helm-charts"
@@ -223,12 +131,11 @@ resource "helm_release" "ksm" {
   })]
 }
 
-# LGTM Stack
+# LGTM Stack (Includes Bundled MinIO)
 resource "kubectl_manifest" "lgtm" {
   depends_on = [
-    kubectl_manifest.minio, 
-    kubectl_manifest.bucket_creator,
-    kubernetes_secret_v1.mimir_s3_creds, # Important dependency
+    kubernetes_secret_v1.minio_creds, 
+    kubernetes_secret_v1.mimir_s3_creds,
     kubernetes_secret_v1.oncall_db_secret,
     kubernetes_secret_v1.oncall_rabbitmq_secret,
     kubernetes_secret_v1.oncall_redis_secret
@@ -258,7 +165,6 @@ resource "kubectl_manifest" "lgtm" {
         chart          = "lgtm-distributed"
         targetRevision = "3.0.1"
         helm = {
-          # We use the values file for all configuration now
           values = file("${path.module}/../k8s/values/lgtm.yaml")
         }
       }

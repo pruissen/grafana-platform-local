@@ -1,19 +1,19 @@
-.PHONY: all install-k3s create-namespaces install-argocd install-minio install-observability install-otel import-dashboards forward forward-argocd clean nuke uninstall-minio uninstall-observability
+.PHONY: all install-k3s create-namespaces install-argocd install-observability install-otel import-dashboards forward forward-argocd clean nuke uninstall-observability clean-observability
 
 USER_NAME ?= $(shell whoami)
-# Detects the IP of the interface 'enp2s0' (Adjust if your interface name differs)
+# Detects the IP of the interface 'enp2s0'
 NODE_IP ?= $(shell ip -4 addr show enp2s0 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
 
 # ---------------------------------------------------------
 # MASTER FLOW
 # ---------------------------------------------------------
-all: install-k3s create-namespaces install-argocd install-minio install-observability install-otel import-dashboards
+all: install-k3s create-namespaces install-argocd install-observability install-otel import-dashboards
 
 # ---------------------------------------------------------
 # 1. INFRASTRUCTURE (K3s)
 # ---------------------------------------------------------
 install-k3s:
-	@echo "--- 0. Setting up Virtual Disk (Fixes XFS/d_type issues) ---"
+	@echo "--- 0. Setting up Virtual Disk ---"
 	@chmod +x scripts/setup-virtual-disk.sh
 	@sudo bash scripts/setup-virtual-disk.sh
 
@@ -46,50 +46,46 @@ install-argocd: create-namespaces
 	@bash scripts/portforward-argocd.sh start
 
 # ---------------------------------------------------------
-# 3. MINIO (Storage Layer)
-# ---------------------------------------------------------
-install-minio:
-	@echo "--- Installing MinIO Storage ---"
-	cd terraform && terraform apply -auto-approve \
-		-target=random_password.minio_root_password \
-		-target=kubernetes_secret_v1.minio_creds \
-		-target=kubectl_manifest.minio
-	
-	@echo "Waiting for MinIO Application to sync..."
-	@sleep 10
-
-uninstall-minio:
-	@echo "--- 🗑️  Uninstalling MinIO Storage ---"
-	cd terraform && terraform destroy -auto-approve \
-		-target=kubectl_manifest.minio \
-		-target=kubectl_manifest.bucket_creator
-
-# ---------------------------------------------------------
-# 4. OBSERVABILITY (LGTM Stack)
+# 3. OBSERVABILITY (LGTM Stack + Bundled MinIO)
 # ---------------------------------------------------------
 install-observability:
-	@echo "--- Installing LGTM Stack & Bucket Creator ---"
+	@echo "--- Installing LGTM Stack (Mimir, Loki, Tempo, MinIO) ---"
 	cd terraform && terraform apply -auto-approve \
 		-target=helm_release.ksm \
+		-target=random_password.minio_root_password \
 		-target=random_password.grafana_admin_password \
 		-target=random_password.oncall_db_password \
 		-target=random_password.oncall_rabbitmq_password \
 		-target=random_password.oncall_redis_password \
+		-target=kubernetes_secret_v1.minio_creds \
 		-target=kubernetes_secret_v1.grafana_creds \
 		-target=kubernetes_secret_v1.mimir_s3_creds \
 		-target=kubernetes_secret_v1.oncall_db_secret \
 		-target=kubernetes_secret_v1.oncall_rabbitmq_secret \
 		-target=kubernetes_secret_v1.oncall_redis_secret \
-		-target=kubectl_manifest.bucket_creator \
 		-target=kubectl_manifest.lgtm
 
 uninstall-observability:
-	@echo "--- 🗑️  Uninstalling LGTM Stack, Alloy & Demo ---"
+	@echo "--- 🗑️  Uninstalling LGTM Stack via Terraform ---"
 	cd terraform && terraform destroy -auto-approve \
 		-target=kubectl_manifest.lgtm \
 		-target=kubectl_manifest.alloy \
 		-target=kubectl_manifest.astronomy \
 		-target=helm_release.ksm
+
+clean-observability:
+	@echo "--- 🧹 Manually Emptying observability-prd Namespace ---"
+	@echo "Deleting all resources..."
+	@kubectl delete all --all -n observability-prd --force --grace-period=0 2>/dev/null || true
+	@echo "Deleting all PVCs..."
+	@kubectl delete pvc --all -n observability-prd --force --grace-period=0 2>/dev/null || true
+	@echo "Deleting all ConfigMaps..."
+	@kubectl delete cm --all -n observability-prd --force --grace-period=0 2>/dev/null || true
+	@echo "Deleting all Secrets..."
+	@kubectl delete secret --all -n observability-prd --force --grace-period=0 2>/dev/null || true
+	@echo "Deleting all Ingresses..."
+	@kubectl delete ingress --all -n observability-prd --force --grace-period=0 2>/dev/null || true
+	@echo "✅ observability-prd is empty."
 
 install-otel:
 	@echo "--- Installing Alloy & Demo ---"
@@ -101,7 +97,7 @@ import-dashboards:
 	@python3 scripts/manage.py --import-dashboards
 
 # ---------------------------------------------------------
-# 5. UTILITIES
+# 4. UTILITIES
 # ---------------------------------------------------------
 forward:
 	@bash scripts/portforward.sh start
@@ -118,7 +114,7 @@ clean:
 	cd terraform && terraform destroy -auto-approve
 
 # ---------------------------------------------------------
-# 6. NUCLEAR OPTION (Remove K3s)
+# 5. NUCLEAR OPTION (Remove K3s)
 # ---------------------------------------------------------
 nuke:
 	@echo "--- ☢️  NUKING CLUSTER ☢️  ---"
