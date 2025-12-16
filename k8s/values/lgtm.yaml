@@ -1,127 +1,119 @@
 global:
   dnsService: "kube-dns"
   clusterDomain: "cluster.local"
+  
+  # -- GLOBAL SECRET INJECTION
+  extraEnvFrom:
+    - secretRef:
+        name: mimir-s3-credentials
 
 # ---------------------------------------------------------------------
-# 1. MIMIR (Metrics) - Fixed for Chart 5.8.0
+# 1. MIMIR CONFIGURATION
 # ---------------------------------------------------------------------
 mimir:
   enabled: true
   fullnameOverride: mimir
   
-  # -- Disable bundled services
+  # -- USE ECR IMAGE (Bitnami)
+  image:
+    repository: public.ecr.aws/bitnami/grafana-mimir
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  multitenancy_enabled: true
+
+  # Disable internal components
   minio: { enabled: false }
   kafka: { enabled: false }
   ingress: { enabled: false }
 
-  # -- Structured Config (Correct method for chart)
+  # -- STRUCTURED CONFIGURATION --
   structuredConfig:
-    # 1. GLOBAL S3 CONFIGURATION
+    # 1. Common Storage Configuration
     common:
       storage:
         backend: s3
         s3:
           endpoint: minio-storage.observability-prd.svc:9000
           bucket_name: mimir-blocks
-          access_key_id: admin
-          secret_access_key: "${s3_secret_key}"
           insecure: true
+          # AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY injected via env
 
-    # 2. STORAGE DEFINITIONS
-    # Explicitly defining backend ensures it inherits 'common' or uses the specific block
+    # 2. Blocks Storage
     blocks_storage:
       backend: s3
       s3:
         bucket_name: mimir-blocks
-        endpoint: minio-storage.observability-prd.svc:9000
       tsdb:
         dir: /data/tsdb
 
+    # 3. Other Storage Components
     ruler_storage:
       backend: s3
-      s3:
-        bucket_name: mimir-ruler
-        endpoint: minio-storage.observability-prd.svc:9000
+      s3: { bucket_name: mimir-ruler }
 
     alertmanager_storage:
       backend: s3
-      s3:
-        bucket_name: mimir-ruler
-        endpoint: minio-storage.observability-prd.svc:9000
+      s3: { bucket_name: mimir-ruler }
 
-    # Explicit duplication for usage_stats (Fixes the specific crash you saw)
+    # 4. DISABLE USAGE STATS (Fixes the crash)
     usage_stats:
-      enabled: true
-    
-    usage_stats_storage:
-      backend: s3
-      s3:
-        bucket_name: mimir-usage-stats
-        endpoint: minio-storage.observability-prd.svc:9000
-        access_key_id: admin
-        secret_access_key: "${s3_secret_key}"
-        insecure: true
+      enabled: false
 
-    # 3. COMPONENT SETTINGS
-    limits:
-      max_cache_freshness: 10m
-      max_query_parallelism: 240
-      max_total_query_length: 12000h
-
-    server:
-      grpc_server_max_recv_msg_size: 104857600
-      grpc_server_max_send_msg_size: 104857600
-
-  # -- COMPONENTS (Diet Mode) --
+  # -- DIET MODE & SCHEDULING --
+  
   ingester:
     replicas: 1
     resources: { requests: { memory: 128Mi, cpu: 100m }, limits: { memory: 512Mi } }
     zoneAwareReplication: { enabled: false }
+    affinity: null 
 
   distributor:
     replicas: 1
     resources: { requests: { memory: 128Mi, cpu: 100m }, limits: { memory: 512Mi } }
+    affinity: null
 
   store_gateway:
     replicas: 1
     resources: { requests: { memory: 128Mi, cpu: 100m }, limits: { memory: 512Mi } }
     zoneAwareReplication: { enabled: false }
+    affinity: null
 
   querier:
     replicas: 1
     resources: { requests: { memory: 128Mi, cpu: 100m }, limits: { memory: 512Mi } }
+    affinity: null
 
   query_frontend:
     replicas: 1
     resources: { requests: { memory: 128Mi, cpu: 100m }, limits: { memory: 512Mi } }
-
-  query_scheduler:
-    replicas: 1
-    resources: { requests: { memory: 128Mi, cpu: 100m }, limits: { memory: 512Mi } }
+    affinity: null
 
   ruler:
     replicas: 1
     resources: { requests: { memory: 128Mi, cpu: 100m }, limits: { memory: 512Mi } }
+    affinity: null
 
   compactor:
     replicas: 1
     resources: { requests: { memory: 128Mi, cpu: 100m }, limits: { memory: 512Mi } }
+    affinity: null
 
   alertmanager:
     replicas: 1
     resources: { requests: { memory: 32Mi, cpu: 10m } }
     zoneAwareReplication: { enabled: false }
+    affinity: null
 
   overrides_exporter:
     replicas: 1
     resources: { requests: { memory: 64Mi, cpu: 10m } }
 
-  # Disable heavy caches
+  rollout_operator: { enabled: false }
   chunks-cache: { enabled: false }
   index-cache: { enabled: false }
-  metadata-cache: { enabled: false }
   results-cache: { enabled: false }
-  rollout_operator: { enabled: false }
+  metadata-cache: { enabled: false }
 
 # ---------------------------------------------------------------------
 # 2. TEMPO (Traces)
@@ -142,7 +134,6 @@ tempo:
         secret_key: "${s3_secret_key}"
         insecure: true
 
-  # Empty maps to silence affinity table warnings
   distributor: { affinity: {}, replicas: 1 }
   ingester: { affinity: {}, replicas: 1 }
   compactor: { affinity: {} }

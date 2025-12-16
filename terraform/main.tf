@@ -1,4 +1,3 @@
-
 # -------------------------------------------------------------------
 # 1. GENERATE SECRETS
 # -------------------------------------------------------------------
@@ -28,7 +27,7 @@ resource "random_password" "oncall_redis_password" {
 }
 
 # -------------------------------------------------------------------
-# 2. KUBERNETES SECRETS (Stored securely in cluster)
+# 2. KUBERNETES SECRETS
 # -------------------------------------------------------------------
 
 # MinIO Admin Credentials
@@ -40,6 +39,18 @@ resource "kubernetes_secret_v1" "minio_creds" {
   data = {
     rootUser     = "admin"
     rootPassword = random_password.minio_root_password.result
+  }
+}
+
+# Mimir S3 Credentials (Global Secret for Environment Variables)
+resource "kubernetes_secret_v1" "mimir_s3_creds" {
+  metadata {
+    name      = "mimir-s3-credentials"
+    namespace = "observability-prd"
+  }
+  data = {
+    AWS_ACCESS_KEY_ID     = "admin"
+    AWS_SECRET_ACCESS_KEY = random_password.minio_root_password.result
   }
 }
 
@@ -55,7 +66,7 @@ resource "kubernetes_secret_v1" "grafana_creds" {
   }
 }
 
-# OnCall Database (MariaDB) Secret
+# OnCall Secrets
 resource "kubernetes_secret_v1" "oncall_db_secret" {
   metadata {
     name      = "oncall-db-secret"
@@ -67,7 +78,6 @@ resource "kubernetes_secret_v1" "oncall_db_secret" {
   }
 }
 
-# OnCall RabbitMQ Secret
 resource "kubernetes_secret_v1" "oncall_rabbitmq_secret" {
   metadata {
     name      = "oncall-rabbitmq-secret"
@@ -79,7 +89,6 @@ resource "kubernetes_secret_v1" "oncall_rabbitmq_secret" {
   }
 }
 
-# OnCall Redis Secret
 resource "kubernetes_secret_v1" "oncall_redis_secret" {
   metadata {
     name      = "oncall-redis-secret"
@@ -94,14 +103,14 @@ resource "kubernetes_secret_v1" "oncall_redis_secret" {
 # 3. INFRASTRUCTURE & APPS
 # -------------------------------------------------------------------
 
-# Job: Creates Buckets in MinIO
+# Job: Creates Buckets
 resource "kubectl_manifest" "bucket_creator" {
   depends_on = [kubernetes_secret_v1.minio_creds]
   yaml_body = yamlencode({
     apiVersion = "batch/v1"
     kind       = "Job"
     metadata = {
-      name      = "minio-bucket-creator-v10" # Bumped version
+      name      = "minio-bucket-creator-v21"
       namespace = "observability-prd"
     }
     spec = {
@@ -111,7 +120,7 @@ resource "kubectl_manifest" "bucket_creator" {
           restartPolicy = "OnFailure"
           containers = [{
             name    = "mc"
-            image   = "minio/mc:latest"
+            image   = "quay.io/minio/mc:latest"
             command = ["/bin/sh", "-c"]
             env = [{
               name = "MINIO_PASS"
@@ -140,7 +149,6 @@ resource "kubectl_manifest" "bucket_creator" {
   })
 }
 
-# ArgoCD Installation
 resource "helm_release" "argocd" {
   name       = "argocd"
   repository = "https://argoproj.github.io/argo-helm"
@@ -159,7 +167,7 @@ resource "helm_release" "argocd" {
   })]
 }
 
-# MinIO (Diet Version)
+# MinIO
 resource "kubectl_manifest" "minio" {
   depends_on = [helm_release.argocd, kubernetes_secret_v1.minio_creds]
   yaml_body = yamlencode({
@@ -168,6 +176,7 @@ resource "kubectl_manifest" "minio" {
     metadata = {
       name      = "minio-storage"
       namespace = "argocd-system"
+      finalizers = ["resources-finalizer.argocd.argoproj.io"]
     }
     spec = {
       project = "default"
@@ -190,7 +199,11 @@ resource "kubectl_manifest" "minio" {
             { name = "mode", value = "standalone" },
             { name = "existingSecret", value = "minio-creds" },
             { name = "resources.requests.memory", value = "256Mi" },
-            { name = "resources.limits.memory", value = "1Gi" }
+            { name = "resources.limits.memory", value = "1Gi" },
+            { name = "image.repository", value = "quay.io/minio/minio" },
+            { name = "image.tag", value = "latest" },
+            { name = "mcImage.repository", value = "quay.io/minio/mc" },
+            { name = "mcImage.tag", value = "latest" }
           ]
         }
       }
@@ -198,7 +211,6 @@ resource "kubectl_manifest" "minio" {
   })
 }
 
-# Kube State Metrics
 resource "helm_release" "ksm" {
   name             = "kube-state-metrics"
   repository       = "https://prometheus-community.github.io/helm-charts"
@@ -211,11 +223,12 @@ resource "helm_release" "ksm" {
   })]
 }
 
-# LGTM Stack (Mimir, Loki, Tempo, Grafana, OnCall)
+# LGTM Stack
 resource "kubectl_manifest" "lgtm" {
   depends_on = [
     kubectl_manifest.minio, 
     kubectl_manifest.bucket_creator,
+    kubernetes_secret_v1.mimir_s3_creds, # Important dependency
     kubernetes_secret_v1.oncall_db_secret,
     kubernetes_secret_v1.oncall_rabbitmq_secret,
     kubernetes_secret_v1.oncall_redis_secret
@@ -226,6 +239,7 @@ resource "kubectl_manifest" "lgtm" {
     metadata = {
       name      = "lgtm"
       namespace = "argocd-system"
+      finalizers = ["resources-finalizer.argocd.argoproj.io"]
     }
     spec = {
       project = "default"
@@ -244,17 +258,15 @@ resource "kubectl_manifest" "lgtm" {
         chart          = "lgtm-distributed"
         targetRevision = "3.0.1"
         helm = {
-          # Only pass the S3 key; everything else is in K8s Secrets now
-          values = templatefile("${path.module}/../k8s/values/lgtm.yaml", {
-            s3_secret_key = random_password.minio_root_password.result
-          })
+          # We use the values file for all configuration now
+          values = file("${path.module}/../k8s/values/lgtm.yaml")
         }
       }
     }
   })
 }
 
-# Alloy (OpenTelemetry Collector)
+# Alloy
 resource "kubectl_manifest" "alloy" {
   depends_on = [kubectl_manifest.lgtm]
   yaml_body = yamlencode({
@@ -263,6 +275,7 @@ resource "kubectl_manifest" "alloy" {
     metadata = {
       name      = "alloy"
       namespace = "argocd-system"
+      finalizers = ["resources-finalizer.argocd.argoproj.io"]
     }
     spec = {
       project = "default"
@@ -288,7 +301,7 @@ resource "kubectl_manifest" "alloy" {
   })
 }
 
-# Astronomy Shop (Demo App)
+# Astronomy Shop
 resource "kubectl_manifest" "astronomy" {
   depends_on = [kubectl_manifest.alloy]
   yaml_body = yamlencode({
@@ -297,6 +310,7 @@ resource "kubectl_manifest" "astronomy" {
     metadata = {
       name      = "astronomy-shop"
       namespace = "argocd-system"
+      finalizers = ["resources-finalizer.argocd.argoproj.io"]
     }
     spec = {
       project = "default"

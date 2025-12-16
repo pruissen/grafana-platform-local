@@ -1,4 +1,4 @@
-.PHONY: all install-k3s create-namespaces install-argocd install-minio install-observability install-otel import-dashboards forward forward-argocd clean nuke
+.PHONY: all install-k3s create-namespaces install-argocd install-minio install-observability install-otel import-dashboards forward forward-argocd clean nuke uninstall-minio uninstall-observability
 
 USER_NAME ?= $(shell whoami)
 # Detects the IP of the interface 'enp2s0' (Adjust if your interface name differs)
@@ -58,6 +58,12 @@ install-minio:
 	@echo "Waiting for MinIO Application to sync..."
 	@sleep 10
 
+uninstall-minio:
+	@echo "--- 🗑️  Uninstalling MinIO Storage ---"
+	cd terraform && terraform destroy -auto-approve \
+		-target=kubectl_manifest.minio \
+		-target=kubectl_manifest.bucket_creator
+
 # ---------------------------------------------------------
 # 4. OBSERVABILITY (LGTM Stack)
 # ---------------------------------------------------------
@@ -70,11 +76,20 @@ install-observability:
 		-target=random_password.oncall_rabbitmq_password \
 		-target=random_password.oncall_redis_password \
 		-target=kubernetes_secret_v1.grafana_creds \
+		-target=kubernetes_secret_v1.mimir_s3_creds \
 		-target=kubernetes_secret_v1.oncall_db_secret \
 		-target=kubernetes_secret_v1.oncall_rabbitmq_secret \
 		-target=kubernetes_secret_v1.oncall_redis_secret \
 		-target=kubectl_manifest.bucket_creator \
 		-target=kubectl_manifest.lgtm
+
+uninstall-observability:
+	@echo "--- 🗑️  Uninstalling LGTM Stack, Alloy & Demo ---"
+	cd terraform && terraform destroy -auto-approve \
+		-target=kubectl_manifest.lgtm \
+		-target=kubectl_manifest.alloy \
+		-target=kubectl_manifest.astronomy \
+		-target=helm_release.ksm
 
 install-otel:
 	@echo "--- Installing Alloy & Demo ---"
@@ -99,7 +114,7 @@ stop-forward:
 	@bash scripts/portforward-argocd.sh stop
 
 clean:
-	@echo "--- Destroying Terraform Resources ---"
+	@echo "--- Destroying ALL Terraform Resources ---"
 	cd terraform && terraform destroy -auto-approve
 
 # ---------------------------------------------------------
