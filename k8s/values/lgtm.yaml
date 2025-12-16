@@ -39,10 +39,10 @@ mimir:
       requests: { memory: 256Mi, cpu: 100m }
       limits: { memory: 1Gi }
 
-    # -- PUBLIC BUCKETS (Bypass Auth Checks) --
+    # -- PUBLIC BUCKETS --
     buckets:
       - name: mimir-blocks
-        policy: public  # <--- Changed from none to public
+        policy: public
         purge: false
       - name: mimir-ruler
         policy: public
@@ -81,17 +81,22 @@ mimir:
       backend: s3
       s3:
         bucket_name: mimir-blocks
+        region: us-east-1 # Explicit region
       tsdb:
         dir: /data/tsdb
 
     # 3. Other Storage Components
     ruler_storage:
       backend: s3
-      s3: { bucket_name: mimir-ruler }
+      s3:
+        bucket_name: mimir-ruler
+        region: us-east-1 # Explicit region
 
     alertmanager_storage:
       backend: s3
-      s3: { bucket_name: mimir-ruler }
+      s3:
+        bucket_name: mimir-ruler
+        region: us-east-1 # Explicit region
 
     # 4. DISABLE USAGE STATS
     usage_stats:
@@ -168,7 +173,8 @@ tempo:
         access_key: admin
         secret_key: "${s3_secret_key}"
         insecure: true
-        s3_force_path_style: true
+        # FIXED: Correct key is force_path_style (without s3_ prefix)
+        force_path_style: true
 
   distributor: { affinity: {}, replicas: 1 }
   ingester: { affinity: {}, replicas: 1 }
