@@ -1,12 +1,6 @@
-.PHONY: all install-k3s create-namespaces install-argocd install-prereqs install-mimir install-loki install-tempo install-grafana install-all uninstall-all clean clean-observability
+.PHONY: all install-k3s create-namespaces install-argocd install-prereqs install-mimir install-loki install-tempo install-grafana install-all uninstall-all clean clean-minio clean-mimir clean-loki clean-tempo clean-grafana clean-otel
 
 USER_NAME ?= $(shell whoami)
-
-# ---------------------------------------------------------
-# DYNAMIC NETWORK DETECTION (Universal)
-# ---------------------------------------------------------
-# We ping a public IP (1.1.1.1) virtually to see which interface the kernel uses.
-# Field 5 is the interface (e.g., wlan0, eth0). Field 7 is the local IP.
 NODE_IFACE ?= $(shell ip route get 1.1.1.1 | awk '{print $$5;exit}')
 NODE_IP ?= $(shell ip route get 1.1.1.1 | awk '{print $$7;exit}')
 
@@ -63,10 +57,10 @@ install-argocd: create-namespaces
 	@bash scripts/portforward-argocd.sh start
 
 # ---------------------------------------------------------
-# 2. SEPARATE COMPONENTS
+# 2. SEPARATE COMPONENTS & CLEANUP
 # ---------------------------------------------------------
 
-# MINIO (Installed First)
+# --- MINIO ---
 install-prereqs:
 	@echo "--- Installing Enterprise MinIO & Secrets ---"
 	cd terraform && terraform apply -auto-approve \
@@ -79,35 +73,67 @@ install-prereqs:
 	@sleep 15
 
 uninstall-prereqs:
+	@echo "--- Uninstalling MinIO ---"
 	cd terraform && terraform destroy -auto-approve \
 		-target=kubectl_manifest.minio \
 		-target=helm_release.ksm
+	@make clean-minio
 
-# MIMIR
+clean-minio:
+	@echo "🧹 Cleaning up MinIO Resources..."
+	@kubectl delete all -n observability-prd -l app.kubernetes.io/name=minio --force --grace-period=0 2>/dev/null || true
+	@kubectl delete pvc -n observability-prd -l app.kubernetes.io/name=minio --force --grace-period=0 2>/dev/null || true
+	@kubectl delete secret -n observability-prd minio-creds mimir-s3-credentials --force --grace-period=0 2>/dev/null || true
+
+# --- MIMIR ---
 install-mimir:
 	@echo "--- Installing Mimir ---"
 	cd terraform && terraform apply -auto-approve -target=kubectl_manifest.mimir
 
 uninstall-mimir:
+	@echo "--- Uninstalling Mimir ---"
 	cd terraform && terraform destroy -auto-approve -target=kubectl_manifest.mimir
+	@make clean-mimir
 
-# LOKI
+clean-mimir:
+	@echo "🧹 Cleaning up Mimir Resources..."
+	@kubectl delete all -n observability-prd -l app.kubernetes.io/name=mimir --force --grace-period=0 2>/dev/null || true
+	@kubectl delete pvc -n observability-prd -l app.kubernetes.io/name=mimir --force --grace-period=0 2>/dev/null || true
+	@kubectl delete cm -n observability-prd -l app.kubernetes.io/name=mimir --force --grace-period=0 2>/dev/null || true
+
+# --- LOKI ---
 install-loki:
 	@echo "--- Installing Loki ---"
 	cd terraform && terraform apply -auto-approve -target=kubectl_manifest.loki
 
 uninstall-loki:
+	@echo "--- Uninstalling Loki ---"
 	cd terraform && terraform destroy -auto-approve -target=kubectl_manifest.loki
+	@make clean-loki
 
-# TEMPO
+clean-loki:
+	@echo "🧹 Cleaning up Loki Resources..."
+	@kubectl delete all -n observability-prd -l app.kubernetes.io/name=loki --force --grace-period=0 2>/dev/null || true
+	@kubectl delete pvc -n observability-prd -l app.kubernetes.io/name=loki --force --grace-period=0 2>/dev/null || true
+	@kubectl delete cm -n observability-prd -l app.kubernetes.io/name=loki --force --grace-period=0 2>/dev/null || true
+
+# --- TEMPO ---
 install-tempo:
 	@echo "--- Installing Tempo ---"
 	cd terraform && terraform apply -auto-approve -target=kubectl_manifest.tempo
 
 uninstall-tempo:
+	@echo "--- Uninstalling Tempo ---"
 	cd terraform && terraform destroy -auto-approve -target=kubectl_manifest.tempo
+	@make clean-tempo
 
-# GRAFANA
+clean-tempo:
+	@echo "🧹 Cleaning up Tempo Resources..."
+	@kubectl delete all -n observability-prd -l app.kubernetes.io/name=tempo --force --grace-period=0 2>/dev/null || true
+	@kubectl delete pvc -n observability-prd -l app.kubernetes.io/name=tempo --force --grace-period=0 2>/dev/null || true
+	@kubectl delete cm -n observability-prd -l app.kubernetes.io/name=tempo --force --grace-period=0 2>/dev/null || true
+
+# --- GRAFANA ---
 install-grafana:
 	@echo "--- Installing Grafana ---"
 	cd terraform && terraform apply -auto-approve \
@@ -116,15 +142,29 @@ install-grafana:
 		-target=kubectl_manifest.grafana
 
 uninstall-grafana:
+	@echo "--- Uninstalling Grafana ---"
 	cd terraform && terraform destroy -auto-approve -target=kubectl_manifest.grafana
+	@make clean-grafana
 
-# OTEL & DEMO
+clean-grafana:
+	@echo "🧹 Cleaning up Grafana Resources..."
+	@kubectl delete all -n observability-prd -l app.kubernetes.io/name=grafana --force --grace-period=0 2>/dev/null || true
+	@kubectl delete pvc -n observability-prd -l app.kubernetes.io/name=grafana --force --grace-period=0 2>/dev/null || true
+	@kubectl delete secret -n observability-prd grafana-admin-creds --force --grace-period=0 2>/dev/null || true
+
+# --- OTEL / ALLOY ---
 install-otel:
 	@echo "--- Installing Alloy & Demo ---"
 	cd terraform && terraform apply -auto-approve -target=kubectl_manifest.alloy -target=kubectl_manifest.astronomy
 
 uninstall-otel:
 	cd terraform && terraform destroy -auto-approve -target=kubectl_manifest.alloy -target=kubectl_manifest.astronomy
+	@make clean-otel
+
+clean-otel:
+	@echo "🧹 Cleaning up Alloy & Demo Resources..."
+	@kubectl delete all -n observability-prd -l app.kubernetes.io/name=alloy --force --grace-period=0 2>/dev/null || true
+	@kubectl delete all -n astronomy-shop --all --force --grace-period=0 2>/dev/null || true
 
 # ---------------------------------------------------------
 # 3. UTILITIES
@@ -132,33 +172,18 @@ uninstall-otel:
 forward:
 	@bash scripts/portforward.sh start
 
-clean-observability:
-	@echo "--- 🧹 Manually Emptying observability-prd Namespace ---"
-	@kubectl delete all --all -n observability-prd --force --grace-period=0 2>/dev/null || true
-	@kubectl delete pvc --all -n observability-prd --force --grace-period=0 2>/dev/null || true
-	@kubectl delete cm --all -n observability-prd --force --grace-period=0 2>/dev/null || true
-	@kubectl delete secret --all -n observability-prd --force --grace-period=0 2>/dev/null || true
-	@kubectl delete ingress --all -n observability-prd --force --grace-period=0 2>/dev/null || true
-
 clean:
 	@echo "--- Destroying ALL Terraform Resources ---"
 	cd terraform && terraform destroy -auto-approve
 
 # ---------------------------------------------------------
-# 4. NUCLEAR OPTION (Remove K3s)
+# 4. NUCLEAR OPTION
 # ---------------------------------------------------------
 nuke:
 	@echo "--- ☢️  NUKING CLUSTER ☢️  ---"
 	@chmod +x scripts/nuke-microk8s.sh 2>/dev/null || true
 	@bash scripts/nuke-microk8s.sh 2>/dev/null || true
-	
-	@echo "--- Uninstalling K3s ---"
 	/usr/local/bin/k3s-uninstall.sh || true
-	
-	@echo "--- Cleaning up mounts and configs ---"
 	sudo umount /var/lib/rancher 2>/dev/null || true
-	sudo rm -rf /etc/rancher
-	sudo rm -rf /var/lib/rancher
-	rm -rf ~/.kube
-	
+	sudo rm -rf /etc/rancher /var/lib/rancher ~/.kube
 	@echo "✅ System Completely Cleaned."

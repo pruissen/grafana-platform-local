@@ -1,47 +1,82 @@
 nameOverride: mimir
 
-# Global injection for S3 Secrets
+# Global Credentials
 global:
   extraEnvFrom:
     - secretRef:
         name: mimir-s3-credentials
 
-image:
-  repository: public.ecr.aws/bitnami/grafana-mimir
-  tag: latest
+# ---------------------------------------------------------------------
+# MAIN MIMIR CONFIGURATION
+# ---------------------------------------------------------------------
+mimir:
+  image:
+    repository: public.ecr.aws/bitnami/grafana-mimir
+    tag: latest
 
-minio: { enabled: false }
+  structuredConfig:
+    
+    # Common Storage
+    common:
+      storage:
+        backend: s3
+        s3:
+          endpoint: minio-enterprise.observability-prd.svc:9000
+          insecure: true
 
-structuredConfig:
-  common:
-    storage:
+    # Blocks Storage
+    blocks_storage:
       backend: s3
       s3:
-        endpoint: minio-enterprise.observability-prd.svc:9000
         bucket_name: mimir-blocks
+        endpoint: minio-enterprise.observability-prd.svc:9000
         insecure: true
-        region: us-east-1
-        s3forcepathstyle: true
-  
-  blocks_storage:
-    s3: { bucket_name: mimir-blocks }
-    tsdb: { dir: /data/tsdb }
-  
-  ruler_storage:
-    s3: { bucket_name: mimir-ruler }
-  
-  alertmanager_storage:
-    s3: { bucket_name: mimir-ruler }
-  
-  usage_stats: { enabled: false }
+      tsdb:
+        dir: /data/tsdb
 
-# Diet Mode (Single Replicas)
-ingester: { replicas: 1, affinity: null }
+    # Ruler Storage
+    ruler_storage:
+      backend: s3
+      s3:
+        bucket_name: mimir-ruler
+        endpoint: minio-enterprise.observability-prd.svc:9000
+        insecure: true
+
+    # Alertmanager Storage
+    alertmanager_storage:
+      backend: s3
+      s3:
+        bucket_name: mimir-ruler
+        endpoint: minio-enterprise.observability-prd.svc:9000
+        insecure: true
+    
+    # Usage Stats
+    usage_stats:
+      enabled: false
+
+# ---------------------------------------------------------------------
+# COMPONENT SCALING
+# ---------------------------------------------------------------------
+minio: { enabled: false }
+
+ingester:
+  replicas: 1
+  zoneAwareReplication: { enabled: false }
+  affinity: null
+  resources: { requests: { memory: 128Mi }, limits: { memory: 1Gi } }
+
+store_gateway:
+  replicas: 1
+  zoneAwareReplication: { enabled: false }
+  affinity: null
+  resources: { requests: { memory: 128Mi }, limits: { memory: 1Gi } }
+
 distributor: { replicas: 1, affinity: null }
-store_gateway: { replicas: 1, affinity: null }
 querier: { replicas: 1, affinity: null }
 query_frontend: { replicas: 1, affinity: null }
 ruler: { replicas: 1, affinity: null }
 compactor: { replicas: 1, affinity: null }
-alertmanager: { replicas: 1, affinity: null }
+alertmanager: { replicas: 1, affinity: null, zoneAwareReplication: { enabled: false } }
 overrides_exporter: { replicas: 1 }
+rollout_operator: { enabled: true }
+nginx: { enabled: true, replicas: 1 }
