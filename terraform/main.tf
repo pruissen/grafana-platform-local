@@ -1,5 +1,5 @@
 # -------------------------------------------------------------------
-# 1. GENERATE SECRETS
+# 1. SECRETS GENERATION
 # -------------------------------------------------------------------
 resource "random_password" "minio_root_password" {
   length  = 16
@@ -11,38 +11,27 @@ resource "random_password" "grafana_admin_password" {
   special = false
 }
 
-resource "random_password" "oncall_db_password" {
-  length  = 16
-  special = false
-}
-
-resource "random_password" "oncall_rabbitmq_password" {
-  length  = 16
-  special = false
-}
-
-resource "random_password" "oncall_redis_password" {
-  length  = 16
-  special = false
-}
-
 # -------------------------------------------------------------------
 # 2. KUBERNETES SECRETS
 # -------------------------------------------------------------------
 
-# MinIO Admin Credentials (Renamed to 'lgtm-minio' for the bundled chart)
+# MinIO Credentials (Used by MinIO Server)
 resource "kubernetes_secret_v1" "minio_creds" {
   metadata {
-    name      = "lgtm-minio"
+    name      = "minio-creds"
     namespace = "observability-prd"
   }
   data = {
-    rootUser     = "admin"
-    rootPassword = random_password.minio_root_password.result
+    # Bitnami chart expects "root-user" and "root-password"
+    "root-user"     = "admin"
+    "root-password" = random_password.minio_root_password.result
+    # Legacy keys for compatibility
+    rootUser        = "admin"
+    rootPassword    = random_password.minio_root_password.result
   }
 }
 
-# Mimir S3 Credentials (Global Secret)
+# S3 Credentials (Used by Mimir/Loki/Tempo Clients)
 resource "kubernetes_secret_v1" "mimir_s3_creds" {
   metadata {
     name      = "mimir-s3-credentials"
@@ -54,6 +43,7 @@ resource "kubernetes_secret_v1" "mimir_s3_creds" {
   }
 }
 
+# Grafana Admin Credentials
 resource "kubernetes_secret_v1" "grafana_creds" {
   metadata {
     name      = "grafana-admin-creds"
@@ -65,40 +55,8 @@ resource "kubernetes_secret_v1" "grafana_creds" {
   }
 }
 
-resource "kubernetes_secret_v1" "oncall_db_secret" {
-  metadata {
-    name      = "oncall-db-secret"
-    namespace = "observability-prd"
-  }
-  data = {
-    "mariadb-root-password" = random_password.oncall_db_password.result
-    "mariadb-password"      = random_password.oncall_db_password.result
-  }
-}
-
-resource "kubernetes_secret_v1" "oncall_rabbitmq_secret" {
-  metadata {
-    name      = "oncall-rabbitmq-secret"
-    namespace = "observability-prd"
-  }
-  data = {
-    "rabbitmq-password"      = random_password.oncall_rabbitmq_password.result
-    "rabbitmq-erlang-cookie" = "secretcookie_for_clustering"
-  }
-}
-
-resource "kubernetes_secret_v1" "oncall_redis_secret" {
-  metadata {
-    name      = "oncall-redis-secret"
-    namespace = "observability-prd"
-  }
-  data = {
-    "redis-password" = random_password.oncall_redis_password.result
-  }
-}
-
 # -------------------------------------------------------------------
-# 3. INFRASTRUCTURE & APPS
+# 3. BASE INFRASTRUCTURE
 # -------------------------------------------------------------------
 
 resource "helm_release" "argocd" {
@@ -111,11 +69,6 @@ resource "helm_release" "argocd" {
     server = {
       insecure = true
     }
-    configs = {
-      cm = {
-        "resource.customizations.ignoreDifferences.all" = "jsonPointers:\n  - /status"
-      }
-    }
   })]
 }
 
@@ -126,26 +79,58 @@ resource "helm_release" "ksm" {
   namespace        = "observability-prd"
   version          = "5.16.0"
   create_namespace = false
-  values = [yamlencode({
-    metricLabelsAllowlist = ["pods=[*]", "deployments=[*]", "nodes=[*]"]
-  })]
 }
 
-# LGTM Stack (Includes Bundled MinIO)
-resource "kubectl_manifest" "lgtm" {
-  depends_on = [
-    kubernetes_secret_v1.minio_creds, 
-    kubernetes_secret_v1.mimir_s3_creds,
-    kubernetes_secret_v1.oncall_db_secret,
-    kubernetes_secret_v1.oncall_rabbitmq_secret,
-    kubernetes_secret_v1.oncall_redis_secret
-  ]
+# -------------------------------------------------------------------
+# 4. APP 1: SHARED STORAGE (MinIO Official)
+# -------------------------------------------------------------------
+resource "kubectl_manifest" "minio" {
+  depends_on = [helm_release.argocd, kubernetes_secret_v1.minio_creds]
   yaml_body = yamlencode({
     apiVersion = "argoproj.io/v1alpha1"
     kind       = "Application"
     metadata = {
-      name      = "lgtm"
-      namespace = "argocd-system"
+      name       = "minio-enterprise"
+      namespace  = "argocd-system"
+      finalizers = ["resources-finalizer.argocd.argoproj.io"]
+    }
+    spec = {
+      project = "default"
+      destination = {
+        server    = "https://kubernetes.default.svc"
+        namespace = "observability-prd"
+      }
+      syncPolicy = {
+        automated = {
+          prune    = true
+          selfHeal = true
+        }
+      }
+      source = {
+        # UPDATED: Official MinIO Repository
+        repoURL        = "https://charts.min.io/"
+        chart          = "minio"
+        # Using a recent stable version compliant with the new values.yaml structure
+        targetRevision = "5.3.0"
+        helm = {
+          values = file("${path.module}/../k8s/values/minio-enterprise.yaml")
+        }
+      }
+    }
+  })
+}
+
+# -------------------------------------------------------------------
+# 5. APP 2: MIMIR (Metrics)
+# -------------------------------------------------------------------
+resource "kubectl_manifest" "mimir" {
+  depends_on = [kubectl_manifest.minio, kubernetes_secret_v1.mimir_s3_creds]
+  yaml_body = yamlencode({
+    apiVersion = "argoproj.io/v1alpha1"
+    kind       = "Application"
+    metadata = {
+      name       = "mimir"
+      namespace  = "argocd-system"
       finalizers = ["resources-finalizer.argocd.argoproj.io"]
     }
     spec = {
@@ -162,25 +147,138 @@ resource "kubectl_manifest" "lgtm" {
       }
       source = {
         repoURL        = "https://grafana.github.io/helm-charts"
-        chart          = "lgtm-distributed"
-        targetRevision = "3.0.1"
+        chart          = "mimir-distributed"
+        targetRevision = "5.6.0"
         helm = {
-          values = file("${path.module}/../k8s/values/lgtm.yaml")
+          values = file("${path.module}/../k8s/values/mimir.yaml")
         }
       }
     }
   })
 }
 
-# Alloy
-resource "kubectl_manifest" "alloy" {
-  depends_on = [kubectl_manifest.lgtm]
+# -------------------------------------------------------------------
+# 6. APP 3: LOKI (Logs)
+# -------------------------------------------------------------------
+resource "kubectl_manifest" "loki" {
+  depends_on = [kubectl_manifest.minio]
   yaml_body = yamlencode({
     apiVersion = "argoproj.io/v1alpha1"
     kind       = "Application"
     metadata = {
-      name      = "alloy"
-      namespace = "argocd-system"
+      name       = "loki"
+      namespace  = "argocd-system"
+      finalizers = ["resources-finalizer.argocd.argoproj.io"]
+    }
+    spec = {
+      project = "default"
+      destination = {
+        server    = "https://kubernetes.default.svc"
+        namespace = "observability-prd"
+      }
+      syncPolicy = {
+        automated = {
+          prune    = true
+          selfHeal = true
+        }
+      }
+      source = {
+        repoURL        = "https://grafana.github.io/helm-charts"
+        chart          = "loki"
+        targetRevision = "6.24.0"
+        helm = {
+          values = file("${path.module}/../k8s/values/loki.yaml")
+        }
+      }
+    }
+  })
+}
+
+# -------------------------------------------------------------------
+# 7. APP 4: TEMPO (Traces)
+# -------------------------------------------------------------------
+resource "kubectl_manifest" "tempo" {
+  depends_on = [kubectl_manifest.minio]
+  yaml_body = yamlencode({
+    apiVersion = "argoproj.io/v1alpha1"
+    kind       = "Application"
+    metadata = {
+      name       = "tempo"
+      namespace  = "argocd-system"
+      finalizers = ["resources-finalizer.argocd.argoproj.io"]
+    }
+    spec = {
+      project = "default"
+      destination = {
+        server    = "https://kubernetes.default.svc"
+        namespace = "observability-prd"
+      }
+      syncPolicy = {
+        automated = {
+          prune    = true
+          selfHeal = true
+        }
+      }
+      source = {
+        repoURL        = "https://grafana.github.io/helm-charts"
+        chart          = "tempo-distributed"
+        targetRevision = "1.18.1"
+        helm = {
+          values = file("${path.module}/../k8s/values/tempo.yaml")
+        }
+      }
+    }
+  })
+}
+
+# -------------------------------------------------------------------
+# 8. APP 5: GRAFANA (Viz)
+# -------------------------------------------------------------------
+resource "kubectl_manifest" "grafana" {
+  depends_on = [kubernetes_secret_v1.grafana_creds]
+  yaml_body = yamlencode({
+    apiVersion = "argoproj.io/v1alpha1"
+    kind       = "Application"
+    metadata = {
+      name       = "grafana"
+      namespace  = "argocd-system"
+      finalizers = ["resources-finalizer.argocd.argoproj.io"]
+    }
+    spec = {
+      project = "default"
+      destination = {
+        server    = "https://kubernetes.default.svc"
+        namespace = "observability-prd"
+      }
+      syncPolicy = {
+        automated = {
+          prune    = true
+          selfHeal = true
+        }
+      }
+      source = {
+        repoURL        = "https://grafana.github.io/helm-charts"
+        chart          = "grafana"
+        targetRevision = "8.5.1"
+        helm = {
+          values = file("${path.module}/../k8s/values/grafana.yaml")
+        }
+      }
+    }
+  })
+}
+
+# -------------------------------------------------------------------
+# 9. OTEL / DEMO
+# -------------------------------------------------------------------
+resource "kubectl_manifest" "alloy" {
+  depends_on = [kubectl_manifest.mimir, kubectl_manifest.loki, kubectl_manifest.tempo]
+  yaml_body = yamlencode({
+    apiVersion = "argoproj.io/v1alpha1"
+    kind       = "Application"
+    metadata = {
+      name       = "alloy"
+      namespace  = "argocd-system"
       finalizers = ["resources-finalizer.argocd.argoproj.io"]
     }
     spec = {
@@ -207,15 +305,14 @@ resource "kubectl_manifest" "alloy" {
   })
 }
 
-# Astronomy Shop
 resource "kubectl_manifest" "astronomy" {
   depends_on = [kubectl_manifest.alloy]
   yaml_body = yamlencode({
     apiVersion = "argoproj.io/v1alpha1"
     kind       = "Application"
     metadata = {
-      name      = "astronomy-shop"
-      namespace = "argocd-system"
+      name       = "astronomy-shop"
+      namespace  = "argocd-system"
       finalizers = ["resources-finalizer.argocd.argoproj.io"]
     }
     spec = {

@@ -1,59 +1,23 @@
-# Secure Platform Engineering Lab: Grafana LGTM Stack + OnCall
+# 🔭 Enterprise Grafana LGTM Stack on K3s
 
-This project creates a complete, local Observability Platform on MicroK8s using the **Grafana LGTM Stack** (Loki, Grafana, Tempo, Mimir) with **Grafana OnCall** embedded. It replaces the standard OpenTelemetry Collector with **Grafana Alloy**.
+Granular, distributed deployment of the Grafana Observability stack using ArgoCD, Terraform, and K3s.
 
-## Architecture
-* **Orchestration**: MicroK8s (Local K8s)
-* **GitOps**: ArgoCD
-* **Metrics**: Mimir (Distributed)
-* **Logs**: Loki (Distributed)
-* **Traces**: Tempo (Distributed)
-* **Incident Response**: Grafana OnCall
-* **Visuals**: Grafana
-* **Telemetry Collection**: Grafana Alloy
-* **Demo App**: OpenTelemetry Astronomy Shop
-* **Storage**: MinIO (S3 Compatible)
+## 🏗️ Architecture
+* **Storage:** Bitnami MinIO (Enterprise-grade artifact)
+* **Metrics:** Grafana Mimir (Distributed)
+* **Logs:** Grafana Loki (Simple Scalable)
+* **Traces:** Grafana Tempo (Distributed)
+* **Visualization:** Grafana
+* **Collector:** Grafana Alloy
 
-## Security
-* All passwords (MinIO, Grafana, Databases) are **randomly generated** by Terraform at runtime.
-* Secrets are injected directly into Kubernetes Secrets and Helm values.
-* No sensitive data is stored in Git or on disk.
+## 🚀 Quick Start
 
-## Prerequisites
-* Ubuntu/Linux environment
-* `make`, `git`, `curl`, `screen`, `terraform` installed.
-
-## Installation Guide
-
-1.  **Install MicroK8s**:
+1.  **Install Base & Prereqs:**
     ```bash
-    make install-microk8s
+    make all
     ```
-    *Installs MicroK8s, enables required addons (dns, helm3, hostpath-storage), and configures your user permissions.*
 
-2.  **Install ArgoCD**:
+2.  **Access:**
     ```bash
-    make install-argocd
+    make forward
     ```
-    *Deploys ArgoCD to the `argocd-system` namespace.*
-
-3.  **Install Observability Stack**:
-    ```bash
-    make install-observability
-    ```
-    * Generates secure random passwords.
-    * Deploys MinIO and runs a Job to create required S3 buckets.
-    * Deploys Mimir, Loki, Tempo, Grafana, and OnCall via the `lgtm-distributed` chart.
-
-4.  **Install Alloy & Demo App**:
-    ```bash
-    make install-otel
-    ```
-    *Deploys Grafana Alloy (configured to send data to the LGTM stack) and the Astronomy Shop demo application.*
-
-## Access & Credentials
-
-Run the port-forward script to expose services and retrieve the generated passwords:
-
-```bash
-make forward

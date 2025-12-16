@@ -1,65 +1,102 @@
 #!/bin/bash
 
-# Define where to store the PID and Logs
+# Configuration
 PID_FILE="/tmp/argocd-portforward.pid"
 LOG_FILE="/tmp/argocd-portforward.log"
+NAMESPACE="argocd-system"
+SERVICE="svc/argocd-server"
+LOCAL_PORT="8080"
+REMOTE_PORT="443"
+
+# ---------------------------------------------------------
+# FUNCTIONS
+# ---------------------------------------------------------
+
+show() {
+    echo "------------------------------------------------------------------------"
+    echo "🐙 ARGOCD ACCESS & CREDENTIALS"
+    echo "------------------------------------------------------------------------"
+    
+    # Check if port-forward is actually running
+    if [ -f "$PID_FILE" ] && ps -p $(cat "$PID_FILE") > /dev/null; then
+        echo "✅ Status:   RUNNING (PID: $(cat $PID_FILE))"
+    else
+        echo "⚠️  Status:   STOPPED"
+    fi
+
+    echo "🔗 URL:      https://localhost:${LOCAL_PORT}"
+    echo "👤 User:     admin"
+    
+    # Retrieve password safely
+    PASS=$(kubectl get secret -n "$NAMESPACE" argocd-initial-admin-secret -o jsonpath="{.data.password}" 2>/dev/null | base64 -d)
+    
+    if [ -z "$PASS" ]; then
+        echo "🔑 Pass:     (Secret not found - is ArgoCD installed?)"
+    else
+        echo "🔑 Pass:     $PASS"
+    fi
+    echo "------------------------------------------------------------------------"
+}
 
 start() {
-    # Check if already running
     if [ -f "$PID_FILE" ]; then
         if ps -p $(cat "$PID_FILE") > /dev/null; then
-            echo "✅ ArgoCD port-forward is already running (PID: $(cat $PID_FILE))."
-            echo "   View logs: tail -f $LOG_FILE"
+            echo "✅ ArgoCD port-forward is already running."
+            show
             exit 0
         else
-            # Stale PID file
             rm "$PID_FILE"
         fi
     fi
 
     echo "🚀 Starting ArgoCD self-healing port-forward..."
     
-    # Run the loop in the background
+    # Run the auto-healing loop in the background
     (
         while true; do
-            echo "[$(date)] Starting kubectl port-forward..." >> "$LOG_FILE"
+            echo "[$(date)] Starting connection to $SERVICE..." >> "$LOG_FILE"
             
-            # The actual command. We use svc/argocd-server explicitly.
-            # We filter out the 'Handling connection' spam to keep logs clean-ish
-            kubectl port-forward svc/argocd-server -n argocd-system 8080:443 >> "$LOG_FILE" 2>&1
+            # The actual port-forward command
+            kubectl port-forward -n "$NAMESPACE" "$SERVICE" "${LOCAL_PORT}:${REMOTE_PORT}" >> "$LOG_FILE" 2>&1
             
+            # If it crashes/disconnects, log it and wait before restarting
             EXIT_CODE=$?
-            echo "[$(date)] Port-forward crashed with exit code $EXIT_CODE. Restarting in 2s..." >> "$LOG_FILE"
+            echo "[$(date)] Connection died (Code: $EXIT_CODE). Restarting in 2s..." >> "$LOG_FILE"
             sleep 2
         done
     ) &
 
-    # Save the PID of the loop (not the kubectl command)
+    # Save the PID of the loop
     echo $! > "$PID_FILE"
-    echo "✅ Running in background (PID: $(cat $PID_FILE))."
-    echo "   Access at: https://localhost:8080"
-    echo "   Logs: $LOG_FILE"
+    
+    # Wait a moment to let the first connection attempt happen
+    sleep 1
+    show
 }
 
 stop() {
     if [ -f "$PID_FILE" ]; then
         PID=$(cat "$PID_FILE")
-        echo "🛑 Stopping ArgoCD port-forward loop (PID: $PID)..."
+        echo "🛑 Stopping ArgoCD port-forward (PID: $PID)..."
         
-        # Kill the loop process (the parent)
-        kill $PID 2>/dev/null
+        # Kill the loop process
+        kill "$PID" 2>/dev/null
         
-        # Find and kill any lingering kubectl port-forward processes matching our target
-        pkill -f "kubectl port-forward svc/argocd-server"
+        # Cleanup any lingering kubectl processes matching our target
+        pkill -f "kubectl port-forward -n $NAMESPACE $SERVICE"
         
         rm "$PID_FILE"
         echo "✅ Stopped."
     else
-        echo "⚠️  No PID file found. Is it running?"
-        # Cleanup just in case
-        pkill -f "kubectl port-forward svc/argocd-server"
+        echo "⚠️  No PID file found. Cleaning up potential orphans..."
+        pkill -f "kubectl port-forward -n $NAMESPACE $SERVICE"
+        echo "✅ Cleanup complete."
     fi
 }
+
+# ---------------------------------------------------------
+# MENU LOGIC
+# ---------------------------------------------------------
 
 case "$1" in
     start)
@@ -73,7 +110,10 @@ case "$1" in
         sleep 1
         start
         ;;
+    show)
+        show
+        ;;
     *)
-        echo "Usage: $0 {start|stop|restart}"
+        echo "Usage: $0 {start|stop|restart|show}"
         exit 1
 esac
