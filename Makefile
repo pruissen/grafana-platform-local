@@ -1,4 +1,4 @@
-.PHONY: all install-k3s create-namespaces install-argocd install-prereqs install-mimir install-loki install-tempo install-grafana install-all uninstall-all clean clean-minio clean-mimir clean-loki clean-tempo clean-grafana clean-otel
+.PHONY: all install-k3s install-argocd install-prereqs install-mimir install-loki install-tempo install-grafana install-all uninstall-all clean clean-minio clean-mimir clean-loki clean-tempo clean-grafana clean-otel
 
 USER_NAME ?= $(shell whoami)
 NODE_IFACE ?= $(shell ip route get 1.1.1.1 | awk '{print $$5;exit}')
@@ -7,7 +7,8 @@ NODE_IP ?= $(shell ip route get 1.1.1.1 | awk '{print $$7;exit}')
 # ---------------------------------------------------------
 # MASTER FLOW
 # ---------------------------------------------------------
-all: install-k3s create-namespaces install-argocd install-all
+# REMOVED: create-namespaces dependency
+all: install-k3s install-argocd install-all
 
 install-all: install-prereqs install-mimir install-loki install-tempo install-grafana install-otel
 
@@ -44,13 +45,8 @@ install-k3s:
 	@timeout=120; until kubectl get nodes | grep -q "Ready"; do echo "Waiting for node..."; sleep 2; done
 	@echo "✅ K3s Ready on $(NODE_IP)."
 
-create-namespaces:
-	@echo "--- Creating Namespaces ---"
-	@kubectl create namespace argocd-system --dry-run=client -o yaml | kubectl apply -f -
-	@kubectl create namespace observability-prd --dry-run=client -o yaml | kubectl apply -f -
-	@kubectl create namespace astronomy-shop --dry-run=client -o yaml | kubectl apply -f -
-
-install-argocd: create-namespaces
+# REMOVED: create-namespaces dependency
+install-argocd:
 	@echo "--- Installing ArgoCD ---"
 	cd terraform && terraform init && terraform apply -auto-approve -target=helm_release.argocd
 	@sleep 10
