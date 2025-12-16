@@ -1,4 +1,8 @@
-nameOverride: mimir
+# -- DASHBOARD COMPATIBILITY FIX --
+# Setting this to null allows the chart to use its default full names 
+# (e.g., mimir-mimir-distributed-ingester), which matches the 
+# default Prometheus job names expected by Grafana dashboards.
+nameOverride: null
 
 # Global Credentials
 global:
