@@ -20,5 +20,22 @@ default:
       value: "http://alloy.observability-prd.svc:4317"
 components:
   loadgenerator:
-    enabled: false
+    enabled: true
+    env:
+      # 1. TARGET: Where to send the traffic (The Shop)
+      - name: FRONTEND_ADDR
+        value: "astronomy-shop-frontendproxy:8080"
+      
+      # 2. TARGET (Standard Locust Variable): Explicitly set the base URL
+      - name: LOCUST_HOST
+        value: "http://astronomy-shop-frontendproxy:8080"
 
+      # 3. LISTENER: Where the Locust Web UI listens (MUST be 0.0.0.0)
+      - name: LOCUST_WEB_HOST
+        value: "0.0.0.0"
+
+      # 4. Load Settings
+      - name: LOCUST_USERS
+        value: "2"
+      - name: LOCUST_SPAWN_RATE
+        value: "1"

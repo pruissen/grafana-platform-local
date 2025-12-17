@@ -6,10 +6,10 @@ alloy:
       
       // ==============================================================================
       // 1. SYSTEM PIPELINE (Tenant: platform-k8s)
-      //    Scrapes K8s Nodes & Pod Logs -> Mimir/Loki
+      //    Target: Cluster Infrastructure, Nodes, System Logs, Events
       // ==============================================================================
 
-      // --- METRICS (Node Exporter) ---
+      // --- METRICS: Node Exporter (Host Metrics) ---
       prometheus.exporter.unix "node_metrics" { }
 
       prometheus.scrape "node_scraper" {
@@ -17,47 +17,93 @@ alloy:
         forward_to = [prometheus.remote_write.mimir_system.receiver]
       }
 
-      // --- LOGS (Pod Logs) ---
-      discovery.relabel "pod_logs" {
-        targets = discovery.kubernetes.pods.targets
-        rule {
-          source_labels = ["__meta_kubernetes_namespace"]
-          action = "keep"
-          regex = "kube-system|observability-prd|argocd-system" // System namespaces
-        }
+      // --- METRICS: Kubelet/cAdvisor (Cluster Health/Container Metrics) ---
+      discovery.kubernetes "nodes" {
+        role = "node"
       }
 
+      prometheus.scrape "kubelet_scraper" {
+        targets    = discovery.kubernetes.nodes.targets
+        scheme     = "https"
+        tls_config {
+          ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+          insecure_skip_verify = true
+        }
+        bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        forward_to = [prometheus.remote_write.mimir_system.receiver]
+      }
+
+      // --- LOGS: System Pods (kube-system, argocd) ---
       discovery.kubernetes "pods" {
         role = "pod"
       }
 
-      loki.source.kubernetes "pod_logs" {
-        targets    = discovery.relabel.pod_logs.output
+      discovery.relabel "logs_k8s" {
+        targets = discovery.kubernetes.pods.targets
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          action = "keep"
+          regex = "kube-system|argocd-system" 
+        }
+      }
+
+      loki.source.kubernetes "pod_logs_k8s" {
+        targets    = discovery.relabel.logs_k8s.output
         forward_to = [loki.write.loki_system.receiver]
       }
 
-      // --- SYSTEM EXPORTERS (Header: platform-k8s) ---
+      // --- LOGS: Kubernetes Events ---
+      loki.source.kubernetes_events "cluster_events" {
+        job_name   = "integrations/kubernetes/eventhandler"
+        forward_to = [loki.write.loki_system.receiver]
+      }
+
+      // --- EXPORTERS (platform-k8s) ---
       prometheus.remote_write "mimir_system" {
         endpoint {
           url = "http://mimir-nginx.observability-prd.svc:80/api/v1/push"
-          headers = {
-            "X-Scope-OrgID" = "platform-k8s",
-          }
+          headers = { "X-Scope-OrgID" = "platform-k8s" }
         }
       }
 
       loki.write "loki_system" {
         endpoint {
           url = "http://loki-gateway.observability-prd.svc:80/loki/api/v1/push"
-          headers = {
-            "X-Scope-OrgID" = "platform-k8s",
-          }
+          headers = { "X-Scope-OrgID" = "platform-k8s" }
         }
       }
 
       // ==============================================================================
-      // 2. SHOP PIPELINE (Tenant: devteam-1)
-      //    Receives OTLP Traces/Metrics/Logs -> Mimir/Loki/Tempo
+      // 2. OBSERVABILITY PIPELINE (Tenant: platform-obs)
+      //    Target: The LGTM Stack itself (observability-prd namespace)
+      // ==============================================================================
+
+      // --- LOGS: Observability Namespace ---
+      discovery.relabel "logs_obs" {
+        targets = discovery.kubernetes.pods.targets
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          action = "keep"
+          regex = "observability-prd"
+        }
+      }
+
+      loki.source.kubernetes "pod_logs_obs" {
+        targets    = discovery.relabel.logs_obs.output
+        forward_to = [loki.write.loki_obs.receiver]
+      }
+
+      // --- EXPORTERS (platform-obs) ---
+      loki.write "loki_obs" {
+        endpoint {
+          url = "http://loki-gateway.observability-prd.svc:80/loki/api/v1/push"
+          headers = { "X-Scope-OrgID" = "platform-obs" }
+        }
+      }
+
+      // ==============================================================================
+      // 3. SHOP PIPELINE (Tenant: devteam-1)
+      //    Target: Application Data (OTLP from OTel Demo)
       // ==============================================================================
 
       // --- RECEIVER (OTLP) ---
@@ -81,18 +127,14 @@ alloy:
         }
       }
 
-      // --- SHOP EXPORTERS (Header: devteam-1) ---
+      // --- EXPORTERS (devteam-1) ---
 
       // 1. Traces -> Tempo
       otelcol.exporter.otlp "tempo_shop" {
         client {
           endpoint = "tempo.observability-prd.svc:4317"
-          tls {
-            insecure = true
-          }
-          headers = {
-            "X-Scope-OrgID" = "devteam-1",
-          }
+          tls { insecure = true }
+          headers = { "X-Scope-OrgID" = "devteam-1" }
         }
       }
 
@@ -104,9 +146,7 @@ alloy:
       loki.write "loki_shop_client" {
         endpoint {
           url = "http://loki-gateway.observability-prd.svc:80/loki/api/v1/push"
-          headers = {
-            "X-Scope-OrgID" = "devteam-1",
-          }
+          headers = { "X-Scope-OrgID" = "devteam-1" }
         }
       }
 
@@ -118,15 +158,16 @@ alloy:
       prometheus.remote_write "mimir_shop" {
         endpoint {
           url = "http://mimir-nginx.observability-prd.svc:80/api/v1/push"
-          headers = {
-            "X-Scope-OrgID" = "devteam-1",
-          }
+          headers = { "X-Scope-OrgID" = "devteam-1" }
         }
       }
 
 # Enable the controller
 controller:
   type: daemonset
+  # Improve stability for Kubelet scraping
+  hostNetwork: true 
+  dnsPolicy: ClusterFirstWithHostNet
 
 service:
   enabled: true

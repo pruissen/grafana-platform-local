@@ -5,6 +5,7 @@ import time
 import base64
 import os
 import json
+import subprocess
 
 # --- CONFIGURATION ---
 GRAFANA_URL = "http://localhost:3000"
@@ -12,11 +13,9 @@ ADMIN_USER = "admin"
 OUTPUT_FILE = "bootstrap-results.json"
 
 # --- DASHBOARD MAPPING ---
-# Define which dashboards go to which teams
 DASHBOARD_GROUPS = [
     {
-        # 1. SHARED INFRASTRUCTURE (Kubernetes & ArgoCD)
-        # Target: Everyone needs to see the platform status
+        # 1. SHARED INFRASTRUCTURE
         "target_orgs": ["platform-k8s", "platform-obs", "devteam-1"],
         "dashboards": [
             {"id": "315", "type": "id", "folder": "Kubernetes", "name": "K8s Nodes"},
@@ -26,26 +25,60 @@ DASHBOARD_GROUPS = [
         ]
     },
     {
-        # 2. OBSERVABILITY STACK (The LGTM Stack itself)
-        # Target: Only the Observability Platform Team
+        # 2. OBSERVABILITY STACK
         "target_orgs": ["platform-obs"],
         "dashboards": [
             {"id": "13639", "type": "id", "folder": "Observability", "name": "Loki Logs"},
             {"id": "15132", "type": "id", "folder": "Observability", "name": "Tempo Operational"},
-            {"id": "16738", "type": "id", "folder": "Observability", "name": "Alloy Operational"},
+            {"id": "18671", "type": "id", "folder": "Observability", "name": "Alloy Overview"}, # Swapped to stable ID
             {"id": "3590", "type": "id", "folder": "Observability", "name": "Grafana Internals"}
         ]
     },
     {
-        # 3. APPLICATIONS (The OTel Demo)
-        # Target: The Application Developer Team
+        # 3. APPLICATIONS (OTel Demo)
         "target_orgs": ["devteam-1"],
         "dashboards": [
             {
-                "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-demo/main/src/grafana/dashboards/opentelemetry-demo.json",
-                "type": "url",
+                "name": "OTel Demo: General",
                 "folder": "Applications",
-                "name": "Astronomy Shop"
+                "type": "url",
+                "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-demo/refs/heads/main/src/grafana/provisioning/dashboards/demo/demo-dashboard.json"
+            },
+            {
+                "name": "OTel Demo: APM / Services",
+                "folder": "Applications",
+                "type": "url",
+                "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-demo/refs/heads/main/src/grafana/provisioning/dashboards/demo/apm-dashboard.json"
+            },
+            {
+                "name": "OTel Demo: Exemplars",
+                "folder": "Applications",
+                "type": "url",
+                "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-demo/refs/heads/main/src/grafana/provisioning/dashboards/demo/exemplars-dashboard.json"
+            },
+            {
+                "name": "OTel Demo: Linux Metrics",
+                "folder": "Applications",
+                "type": "url",
+                "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-demo/refs/heads/main/src/grafana/provisioning/dashboards/demo/linux-dashboard.json"
+            },
+            {
+                "name": "OTel Demo: Collector Status",
+                "folder": "Applications",
+                "type": "url",
+                "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-demo/refs/heads/main/src/grafana/provisioning/dashboards/demo/opentelemetry-collector.json"
+            },
+            {
+                "name": "OTel Demo: PostgreSQL",
+                "folder": "Applications",
+                "type": "url",
+                "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-demo/refs/heads/main/src/grafana/provisioning/dashboards/demo/postgresql-dashboard.json"
+            },
+            {
+                "name": "OTel Demo: Span Metrics",
+                "folder": "Applications",
+                "type": "url",
+                "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-demo/refs/heads/main/src/grafana/provisioning/dashboards/demo/spanmetrics-dashboard.json"
             }
         ]
     }
@@ -53,7 +86,6 @@ DASHBOARD_GROUPS = [
 
 # Fetch password from K8s if not provided via env var
 try:
-    import subprocess
     cmd = "kubectl get secret -n observability-prd grafana-admin-creds -o jsonpath='{.data.admin-password}' | base64 -d"
     ADMIN_PASS = subprocess.check_output(cmd, shell=True).decode('utf-8').strip()
 except:
@@ -73,12 +105,9 @@ def get_auth():
 def get_org_id_by_name(name):
     """Finds the numeric ID of an Organization by its name."""
     try:
-        # 1. Try to get specific org
         res = requests.get(f"{GRAFANA_URL}/api/orgs/name/{name}", auth=get_auth())
         if res.status_code == 200:
             return res.json()['id']
-        
-        # 2. Fallback: Search all orgs
         res = requests.get(f"{GRAFANA_URL}/api/orgs", auth=get_auth())
         if res.status_code == 200:
             for org in res.json():
@@ -95,8 +124,10 @@ def get_dashboard_json(source, is_url=False):
             r = requests.get(source)
             if r.status_code == 200:
                 return r.json()
+            else:
+                print(f"      ❌ HTTP Error {r.status_code} fetching URL")
         except Exception as e:
-            print(f"      Error fetching: {e}")
+            print(f"      ❌ Error fetching: {e}")
             return None
     else:
         print(f"      ⬇️  Fetching ID {source} from Grafana.com...")
@@ -108,16 +139,54 @@ def get_dashboard_json(source, is_url=False):
             pass
     return None
 
+def resolve_inputs(dashboard_json):
+    """
+    Dynamically maps the dashboard's required inputs (from __inputs)
+    to our actual Datasource names (Mimir, Loki, Tempo).
+    Includes handling for specific variable names like VAR_DATASOURCE.
+    """
+    inputs = []
+    if "__inputs" not in dashboard_json:
+        return inputs
+
+    for req_input in dashboard_json["__inputs"]:
+        # We only care about datasource inputs
+        if req_input.get("type") == "datasource":
+            plugin_id = req_input.get("pluginId")
+            input_name = req_input.get("name")
+            
+            # 1. Determine target DB based on Plugin ID
+            db_name = None
+            if plugin_id == "prometheus":
+                db_name = "Mimir"
+            elif plugin_id == "loki":
+                db_name = "Loki"
+            elif plugin_id == "tempo":
+                db_name = "Tempo"
+            
+            # 2. Handle known legacy variable names specifically
+            # Some dashboards hardcode 'VAR_DATASOURCE' or 'DS_PROMETHEUS'
+            if input_name in ["VAR_DATASOURCE", "DS_PROMETHEUS"]:
+                db_name = "Mimir"
+
+            if db_name:
+                inputs.append({
+                    "name": input_name,
+                    "type": "datasource",
+                    "pluginId": plugin_id,
+                    "value": db_name
+                })
+    return inputs
+
 def import_dashboards():
     print("--- 📊 IMPORTING DASHBOARDS ---")
     headers_base = {"Content-Type": "application/json"}
     
     for group in DASHBOARD_GROUPS:
-        # For every group of dashboards...
         for dashboard_def in group['dashboards']:
             print(f"📦 Preparing Dashboard: {dashboard_def['name']}")
             
-            # 1. Download Content (Once)
+            # 1. Download
             data = None
             if dashboard_def['type'] == 'url':
                 data = get_dashboard_json(dashboard_def['url'], is_url=True)
@@ -128,34 +197,34 @@ def import_dashboards():
                 print("      ❌ Failed to download definition. Skipping.")
                 continue
 
-            # 2. Distribute to Target Orgs
+            # 2. SANITIZE JSON for Import
+            # CRITICAL: Remove 'id' so Grafana treats it as a new/update by UID
+            if 'id' in data:
+                data['id'] = None
+            
+            # 3. Resolve Inputs dynamically
+            import_inputs = resolve_inputs(data)
+
+            # 4. Distribute
             for org_name in group['target_orgs']:
                 org_id = get_org_id_by_name(org_name)
                 
                 if not org_id:
-                    print(f"      ⚠️  Skipping import for '{org_name}' (Org not found). Run --bootstrap-orgs first.")
+                    print(f"      ⚠️  Skipping import for '{org_name}' (Org not found).")
                     continue
 
                 print(f"      ➡️  Importing to Org: {org_name} (ID: {org_id})...")
                 
-                # Prepare Request with Org Context
                 headers = headers_base.copy()
                 headers["X-Grafana-Org-Id"] = str(org_id)
                 
-                # Prepare Payload
-                # We blindly inject the datasources we created in bootstrap
                 payload = {
                     "dashboard": data,
                     "overwrite": True,
-                    "folderUid": "", # Can use folderId if we created folders, but root is fine for now
-                    "inputs": [
-                        {"name": "DS_PROMETHEUS", "type": "datasource", "pluginId": "prometheus", "value": "Mimir"},
-                        {"name": "DS_LOKI", "type": "datasource", "pluginId": "loki", "value": "Loki"},
-                        {"name": "DS_TEMPO", "type": "datasource", "pluginId": "tempo", "value": "Tempo"}
-                    ]
+                    "folderUid": "", 
+                    "inputs": import_inputs 
                 }
                 
-                # Execute Import
                 try:
                     res = requests.post(f"{GRAFANA_URL}/api/dashboards/import", json=payload, auth=get_auth(), headers=headers)
                     if res.status_code == 200:
