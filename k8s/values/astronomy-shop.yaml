@@ -21,6 +21,8 @@ default:
 components:
   loadgenerator:
     enabled: true
+    useDefault:
+      env: true
     env:
       # 1. TARGET: Where to send the traffic (The Shop)
       - name: FRONTEND_ADDR
@@ -39,3 +41,5 @@ components:
         value: "2"
       - name: LOCUST_SPAWN_RATE
         value: "1"
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: "http://alloy.observability-prd.svc:4317"
