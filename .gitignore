@@ -12,3 +12,4 @@ terraform/crash.log
 
 # Configs that might contain sensitive data if you edit them
 kubeconfig
+bootstrap-results.json

@@ -1,7 +1,17 @@
-ingress: { enabled: false }
-envFrom: [{ secretRef: { name: tempo-s3-credentials } }]
+# Disable Ingress
+ingress:
+  enabled: false
+
+# Inject Credentials via Environment Variables
+envFrom:
+  - secretRef:
+      name: tempo-s3-credentials
+
 tempo:
-  multitenancyEnabled: true # 🔒 ENABLES MULTI-TENANCY
+  # 🔒 MULTI-TENANCY ENABLED
+  multitenancyEnabled: true
+
+# Explicit Configuration
 storage:
   trace:
     backend: s3
@@ -9,11 +19,27 @@ storage:
       bucket: tempo-traces
       endpoint: minio-enterprise.observability-prd.svc:9000
       insecure: true
+      # We reference the Env Vars injected above
       access_key: "${TEMPO_S3_ACCESS_KEY}"
       secret_key: "${TEMPO_S3_SECRET_KEY}"
       forcepathstyle: true
-persistence: { enabled: true, size: 10Gi, storageClassName: local-path }
-resources: { requests: { cpu: 50m, memory: 128Mi }, limits: { cpu: 500m, memory: 512Mi } }
+
+# Persistence (Required for WAL)
+persistence:
+  enabled: true
+  size: 10Gi
+  storageClassName: local-path
+
+# Resources (Diet Mode)
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Service Graph (Optional - enables metrics from traces)
 metricsGenerator:
   enabled: true
   config:
@@ -21,4 +47,6 @@ metricsGenerator:
       remote_write:
         - url: http://mimir-nginx.observability-prd.svc:80/api/v1/push
           send_exemplars: true
-          # Note: Self-monitoring metrics will need a tenant header too in a real prod setup
+          # Note: In a strict multi-tenant setup, this push also needs a header.
+          # For now, it might fail silently or go to anonymous depending on Mimir config.
+          # To fix properly, we'd need to route this through Alloy as well.

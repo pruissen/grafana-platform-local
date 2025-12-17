@@ -1,4 +1,4 @@
-.PHONY: all install-k3s install-argocd install-prereqs install-mimir install-loki install-tempo install-grafana install-all uninstall-all clean clean-minio clean-mimir clean-loki clean-tempo clean-grafana clean-otel
+.PHONY: all install-k3s install-argocd install-prereqs install-mimir install-loki install-tempo install-grafana install-alloy install-all uninstall-all clean clean-minio clean-mimir clean-loki clean-tempo clean-grafana clean-alloy bootstrap forward nuke
 
 USER_NAME ?= $(shell whoami)
 NODE_IFACE ?= $(shell ip route get 1.1.1.1 | awk '{print $$5;exit}')
@@ -7,12 +7,11 @@ NODE_IP ?= $(shell ip route get 1.1.1.1 | awk '{print $$7;exit}')
 # ---------------------------------------------------------
 # MASTER FLOW
 # ---------------------------------------------------------
-# REMOVED: create-namespaces dependency
 all: install-k3s install-argocd install-all
 
-install-all: install-prereqs install-mimir install-loki install-tempo install-grafana install-otel
+install-all: install-prereqs install-mimir install-loki install-tempo install-grafana install-alloy bootstrap
 
-uninstall-all: uninstall-otel uninstall-grafana uninstall-tempo uninstall-loki uninstall-mimir uninstall-prereqs
+uninstall-all: uninstall-alloy uninstall-grafana uninstall-tempo uninstall-loki uninstall-mimir uninstall-prereqs
 
 # ---------------------------------------------------------
 # 1. INFRASTRUCTURE
@@ -45,7 +44,6 @@ install-k3s:
 	@timeout=120; until kubectl get nodes | grep -q "Ready"; do echo "Waiting for node..."; sleep 2; done
 	@echo "✅ K3s Ready on $(NODE_IP)."
 
-# REMOVED: create-namespaces dependency
 install-argocd:
 	@echo "--- Installing ArgoCD ---"
 	cd terraform && terraform init && terraform apply -auto-approve -target=helm_release.argocd
@@ -148,25 +146,36 @@ clean-grafana:
 	@kubectl delete pvc -n observability-prd -l app.kubernetes.io/name=grafana --force --grace-period=0 2>/dev/null || true
 	@kubectl delete secret -n observability-prd grafana-admin-creds --force --grace-period=0 2>/dev/null || true
 
-# --- OTEL / ALLOY ---
-install-otel:
-	@echo "--- Installing Alloy & Demo ---"
-	cd terraform && terraform apply -auto-approve -target=kubectl_manifest.alloy -target=kubectl_manifest.astronomy
+# --- ALLOY (Collector/Router) ---
+install-alloy:
+	@echo "--- Installing Grafana Alloy ---"
+	cd terraform && terraform apply -auto-approve -target=kubectl_manifest.alloy
 
-uninstall-otel:
-	cd terraform && terraform destroy -auto-approve -target=kubectl_manifest.alloy -target=kubectl_manifest.astronomy
-	@make clean-otel
+uninstall-alloy: remove-alloy
+	@echo "✅ Alloy Uninstalled."
 
-clean-otel:
-	@echo "🧹 Cleaning up Alloy & Demo Resources..."
+remove-alloy:
+	@echo "--- Removing Grafana Alloy ---"
+	cd terraform && terraform destroy -auto-approve -target=kubectl_manifest.alloy
+	@make clean-alloy
+
+clean-alloy:
+	@echo "🧹 Cleaning up Alloy Resources..."
 	@kubectl delete all -n observability-prd -l app.kubernetes.io/name=alloy --force --grace-period=0 2>/dev/null || true
-	@kubectl delete all -n astronomy-shop --all --force --grace-period=0 2>/dev/null || true
+	@kubectl delete pvc -n observability-prd -l app.kubernetes.io/name=alloy --force --grace-period=0 2>/dev/null || true
+	@kubectl delete daemonset -n observability-prd alloy --force --grace-period=0 2>/dev/null || true
 
 # ---------------------------------------------------------
-# 3. UTILITIES
+# 3. UTILITIES & BOOTSTRAP
 # ---------------------------------------------------------
+bootstrap:
+	@echo "--- 🚀 Bootstrapping Grafana Orgs & Datasources ---"
+	@# Ensure dependencies (requests) are installed for the python script
+	@pip3 install requests >/dev/null 2>&1 || true
+	@python3 scripts/manage.py --bootstrap-orgs
+
 forward:
-	@bash scripts/portforward.sh start
+	@bash scripts/portforward-all.sh start
 
 clean:
 	@echo "--- Destroying ALL Terraform Resources ---"

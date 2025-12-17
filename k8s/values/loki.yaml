@@ -1,33 +1,84 @@
 nameOverride: null
 fullnameOverride: null
+
 deploymentMode: SingleBinary
+
 loki:
-  auth_enabled: true # 🔒 ENABLES MULTI-TENANCY
+  # 🔒 MULTI-TENANCY ENABLED
+  auth_enabled: true
+
+  # Fix "Too many unhealthy instances"
   commonConfig:
     replication_factor: 1
-    ring: { kvstore: { store: memberlist } }
+    ring:
+      kvstore:
+        store: memberlist
+
+  # Storage Configuration (S3/MinIO)
   storage:
     type: s3
-    bucketNames: { chunks: loki-chunks, ruler: loki-ruler, admin: loki-admin }
+    bucketNames:
+      chunks: loki-chunks
+      ruler: loki-ruler
+      admin: loki-admin
     s3:
       endpoint: http://minio-enterprise.observability-prd.svc:9000
       s3ForcePathStyle: true
       insecure: true
       accessKeyId: "${LOKI_S3_ACCESS_KEY}"
       secretAccessKey: "${LOKI_S3_SECRET_KEY}"
+
   schemaConfig:
     configs:
       - from: 2024-01-01
         store: tsdb
         object_store: s3
         schema: v13
-        index: { prefix: index_, period: 24h }
+        index:
+          prefix: index_
+          period: 24h
+
+# --- COMPONENT SCALING ---
+
+# 1. Enable Single Binary
 singleBinary:
   replicas: 1
-  resources: { limits: { memory: 1Gi }, requests: { cpu: 100m, memory: 256Mi } }
-  persistence: { enabled: true, size: 10Gi, storageClassName: local-path }
+  resources:
+    limits:
+      memory: 1Gi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClassName: local-path
+
+# 2. DISABLE Distributed Components (Fixes the validation error)
+write:
+  replicas: 0
+read:
+  replicas: 0
+backend:
+  replicas: 0
+
+# 3. Gateway (Nginx)
 gateway:
   replicas: 1
-  service: { type: ClusterIP }
-  ingress: { enabled: false }
-monitoring: { dashboards: { enabled: false }, rules: { enabled: false }, serviceMonitor: { enabled: false }, selfMonitoring: { enabled: false, lokiCanary: { enabled: false } } }
+  service:
+    type: ClusterIP
+  ingress:
+    enabled: false
+
+# 4. Disable Self-Monitoring
+monitoring:
+  dashboards:
+    enabled: false
+  rules:
+    enabled: false
+  serviceMonitor:
+    enabled: false
+  selfMonitoring:
+    enabled: false
+    lokiCanary:
+      enabled: false

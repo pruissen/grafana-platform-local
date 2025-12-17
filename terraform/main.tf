@@ -15,7 +15,6 @@ resource "kubernetes_namespace" "observability" {
   }
 }
 
-# ADDED: This was in your Makefile, so we must manage it here now
 resource "kubernetes_namespace" "astronomy_shop" {
   metadata {
     name = "astronomy-shop"
@@ -338,6 +337,48 @@ resource "kubectl_manifest" "grafana" {
         targetRevision = "8.0.0"
         helm = {
           values = file("${path.module}/../k8s/values/grafana.yaml")
+        }
+      }
+    }
+  })
+}
+
+# -------------------------------------------------------------------
+# 9. ALLOY (Collector & Router)
+# -------------------------------------------------------------------
+resource "kubectl_manifest" "alloy" {
+  depends_on = [
+    helm_release.argocd, 
+    kubectl_manifest.mimir, 
+    kubectl_manifest.loki, 
+    kubectl_manifest.tempo
+  ]
+  yaml_body = yamlencode({
+    apiVersion = "argoproj.io/v1alpha1"
+    kind       = "Application"
+    metadata = {
+      name       = "alloy"
+      namespace  = "argocd-system"
+      finalizers = ["resources-finalizer.argocd.argoproj.io"]
+    }
+    spec = {
+      project = "default"
+      destination = {
+        server    = "https://kubernetes.default.svc"
+        namespace = "observability-prd"
+      }
+      syncPolicy = {
+        automated = {
+          prune    = true
+          selfHeal = true
+        }
+      }
+      source = {
+        repoURL        = "https://grafana.github.io/helm-charts"
+        chart          = "alloy"
+        targetRevision = "0.9.0"
+        helm = {
+          values = file("${path.module}/../k8s/values/alloy.yaml")
         }
       }
     }

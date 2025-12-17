@@ -1,33 +1,97 @@
-nameOverride: mimir
+# k8s/values/mimir.yaml
+
+# Global Credentials
 global:
-  extraEnvFrom: [{ secretRef: { name: mimir-s3-credentials } }]
+  extraEnvFrom:
+    - secretRef:
+        name: mimir-s3-credentials
+
+# ---------------------------------------------------------------------
+# MAIN MIMIR CONFIGURATION
+# ---------------------------------------------------------------------
 mimir:
-  auth_enabled: true # 🔒 ENABLES MULTI-TENANCY
+  image:
+    repository: public.ecr.aws/bitnami/grafana-mimir
+    tag: latest
+
+  # 🔒 MULTI-TENANCY ENABLED (Requires X-Scope-OrgID header)
+  auth_enabled: true
+
   structuredConfig:
+    
+    # Common Storage
     common:
       storage:
         backend: s3
-        s3: { endpoint: minio-enterprise.observability-prd.svc:9000, insecure: true }
+        s3:
+          endpoint: minio-enterprise.observability-prd.svc:9000
+          insecure: true
+
+    # Blocks Storage
     blocks_storage:
       backend: s3
-      s3: { bucket_name: mimir-blocks, endpoint: minio-enterprise.observability-prd.svc:9000, insecure: true }
-      tsdb: { dir: /data/tsdb }
+      s3:
+        bucket_name: mimir-blocks
+        endpoint: minio-enterprise.observability-prd.svc:9000
+        insecure: true
+      tsdb:
+        dir: /data/tsdb
+
+    # Ruler Storage
     ruler_storage:
       backend: s3
-      s3: { bucket_name: mimir-ruler, endpoint: minio-enterprise.observability-prd.svc:9000, insecure: true }
+      s3:
+        bucket_name: mimir-ruler
+        endpoint: minio-enterprise.observability-prd.svc:9000
+        insecure: true
+
+    # Alertmanager Storage
     alertmanager_storage:
       backend: s3
-      s3: { bucket_name: mimir-ruler, endpoint: minio-enterprise.observability-prd.svc:9000, insecure: true }
-    usage_stats: { enabled: false }
+      s3:
+        bucket_name: mimir-ruler
+        endpoint: minio-enterprise.observability-prd.svc:9000
+        insecure: true
+    
+    # Usage Stats
+    usage_stats:
+      enabled: false
+
+    # --- REPLICATION FACTOR SETTINGS (Single Node Fixes) ---
+    
+    # 1. Ingester: CRITICAL FIX for "too many unhealthy instances"
     ingester:
-      ring: { replication_factor: 1 }
+      ring:
+        replication_factor: 1
+    
+    # 2. Store Gateway
     store_gateway:
-      sharding_ring: { replication_factor: 1 }
+      sharding_ring:
+        replication_factor: 1
+
+    # 3. Distributor
     distributor:
-      ring: { kvstore: { store: memberlist } }
+      ring:
+        kvstore:
+          store: memberlist
+
+# ---------------------------------------------------------------------
+# COMPONENT SCALING
+# ---------------------------------------------------------------------
 minio: { enabled: false }
-ingester: { replicas: 1, affinity: null, zoneAwareReplication: { enabled: false }, resources: { requests: { memory: 128Mi }, limits: { memory: 1Gi } } }
-store_gateway: { replicas: 1, affinity: null, zoneAwareReplication: { enabled: false }, resources: { requests: { memory: 128Mi }, limits: { memory: 1Gi } } }
+
+ingester:
+  replicas: 1
+  zoneAwareReplication: { enabled: false }
+  affinity: null
+  resources: { requests: { memory: 128Mi }, limits: { memory: 1Gi } }
+
+store_gateway:
+  replicas: 1
+  zoneAwareReplication: { enabled: false }
+  affinity: null
+  resources: { requests: { memory: 128Mi }, limits: { memory: 1Gi } }
+
 distributor: { replicas: 1, affinity: null }
 querier: { replicas: 1, affinity: null }
 query_frontend: { replicas: 1, affinity: null }
