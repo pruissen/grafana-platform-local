@@ -1,4 +1,3 @@
-# k8s/values/alloy.yaml
 alloy:
   configMap:
     create: true
@@ -6,24 +5,33 @@ alloy:
       
       // ==============================================================================
       // 1. SYSTEM PIPELINE (Tenant: platform-k8s)
-      //    Target: Cluster Infrastructure, Nodes, System Logs, Events
       // ==============================================================================
 
-      // --- METRICS: Node Exporter (Host Metrics) ---
-      prometheus.exporter.unix "node_metrics" { }
-
-      prometheus.scrape "node_scraper" {
-        targets    = prometheus.exporter.unix.node_metrics.targets
-        forward_to = [prometheus.remote_write.mimir_system.receiver]
-      }
-
-      // --- METRICS: Kubelet/cAdvisor (Cluster Health/Container Metrics) ---
+      // --- METRICS: Kubelet/cAdvisor (Cluster Health) ---
       discovery.kubernetes "nodes" {
         role = "node"
       }
 
+      // 🛠️ ENRICHMENT: Map all K8s Node Labels/Annotations to Metrics
+      discovery.relabel "nodes_enriched" {
+        targets = discovery.kubernetes.nodes.targets
+        
+        // 1. Keep Namespace/Node Name
+        rule { source_labels = ["__meta_kubernetes_node_name"], target_label = "node" }
+        
+        // 2. Map ALL Labels (k8s label 'foo' -> metric label 'foo')
+        rule { action = "labelmap", regex = "__meta_kubernetes_node_label_(.+)" }
+        
+        // 3. Map ALL Annotations (k8s annotation 'foo' -> metric label 'annotation_foo')
+        rule { 
+          action = "labelmap" 
+          regex = "__meta_kubernetes_node_annotation_(.+)"
+          replacement = "annotation_$1"
+        }
+      }
+
       prometheus.scrape "kubelet_scraper" {
-        targets    = discovery.kubernetes.nodes.targets
+        targets    = discovery.relabel.nodes_enriched.output
         scheme     = "https"
         tls_config {
           ca_file = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
@@ -33,17 +41,41 @@ alloy:
         forward_to = [prometheus.remote_write.mimir_system.receiver]
       }
 
-      // --- LOGS: System Pods (kube-system, argocd) ---
+      // --- METRICS: Node Exporter ---
+      prometheus.exporter.unix "node_metrics" { }
+      
+      prometheus.scrape "node_scraper" {
+        targets    = prometheus.exporter.unix.node_metrics.targets
+        forward_to = [prometheus.remote_write.mimir_system.receiver]
+      }
+
+      // --- LOGS: System Pods ---
       discovery.kubernetes "pods" {
         role = "pod"
       }
 
+      // 🛠️ ENRICHMENT: Map all Pod Labels/Annotations to Logs
       discovery.relabel "logs_k8s" {
         targets = discovery.kubernetes.pods.targets
+        
+        // Filter System Namespaces
         rule {
           source_labels = ["__meta_kubernetes_namespace"]
           action = "keep"
           regex = "kube-system|argocd-system" 
+        }
+
+        // Standard Identity Labels
+        rule { source_labels = ["__meta_kubernetes_namespace"], target_label = "namespace" }
+        rule { source_labels = ["__meta_kubernetes_pod_name"], target_label = "pod" }
+        rule { source_labels = ["__meta_kubernetes_pod_container_name"], target_label = "container" }
+
+        // Map ALL Labels & Annotations
+        rule { action = "labelmap", regex = "__meta_kubernetes_pod_label_(.+)" }
+        rule { 
+          action = "labelmap" 
+          regex = "__meta_kubernetes_pod_annotation_(.+)"
+          replacement = "annotation_$1"
         }
       }
 
@@ -52,7 +84,7 @@ alloy:
         forward_to = [loki.write.loki_system.receiver]
       }
 
-      // --- LOGS: Kubernetes Events ---
+      // --- LOGS: Events ---
       loki.source.kubernetes_events "cluster_events" {
         job_name   = "integrations/kubernetes/eventhandler"
         forward_to = [loki.write.loki_system.receiver]
@@ -75,10 +107,8 @@ alloy:
 
       // ==============================================================================
       // 2. OBSERVABILITY PIPELINE (Tenant: platform-obs)
-      //    Target: The LGTM Stack itself (observability-prd namespace)
       // ==============================================================================
 
-      // --- LOGS: Observability Namespace ---
       discovery.relabel "logs_obs" {
         targets = discovery.kubernetes.pods.targets
         rule {
@@ -86,6 +116,11 @@ alloy:
           action = "keep"
           regex = "observability-prd"
         }
+        // Map ALL Labels & Annotations
+        rule { source_labels = ["__meta_kubernetes_namespace"], target_label = "namespace" }
+        rule { source_labels = ["__meta_kubernetes_pod_name"], target_label = "pod" }
+        rule { action = "labelmap", regex = "__meta_kubernetes_pod_label_(.+)" }
+        rule { action = "labelmap", regex = "__meta_kubernetes_pod_annotation_(.+)", replacement = "annotation_$1" }
       }
 
       loki.source.kubernetes "pod_logs_obs" {
@@ -93,7 +128,6 @@ alloy:
         forward_to = [loki.write.loki_obs.receiver]
       }
 
-      // --- EXPORTERS (platform-obs) ---
       loki.write "loki_obs" {
         endpoint {
           url = "http://loki-gateway.observability-prd.svc:80/loki/api/v1/push"
@@ -103,13 +137,46 @@ alloy:
 
       // ==============================================================================
       // 3. SHOP PIPELINE (Tenant: devteam-1)
-      //    Target: Application Data (OTLP from OTel Demo)
+      //    Enhanced with automatic K8s Metadata Lookup
       // ==============================================================================
 
-      // --- RECEIVER (OTLP) ---
       otelcol.receiver.otlp "shop_receiver" {
         grpc { endpoint = "0.0.0.0:4317" }
         http { endpoint = "0.0.0.0:4318" }
+
+        output {
+          metrics = [otelcol.processor.k8sattributes.k8s_enricher.input]
+          logs    = [otelcol.processor.k8sattributes.k8s_enricher.input]
+          traces  = [otelcol.processor.k8sattributes.k8s_enricher.input]
+        }
+      }
+
+      // 🛠️ ENRICHMENT: Lookup K8s Metadata based on Source IP
+      otelcol.processor.k8sattributes "k8s_enricher" {
+        extract {
+          metadata = [
+            "k8s.namespace.name",
+            "k8s.pod.name",
+            "k8s.pod.uid",
+            "k8s.deployment.name",
+            "k8s.node.name",
+          ]
+          
+          // Grab ALL Labels
+          labels = [
+            { key_regex = "(.*)", tag_name = "$1" },
+          ]
+          
+          // Grab ALL Annotations (mapped with 'annotation_' prefix)
+          annotations = [
+            { key_regex = "(.*)", tag_name = "annotation_$1" },
+          ]
+        }
+        
+        // Use the incoming connection IP to identify the Pod
+        pod_association {
+          source { from = "connection" }
+        }
 
         output {
           metrics = [otelcol.processor.batch.shop_batch.input]
@@ -118,7 +185,6 @@ alloy:
         }
       }
 
-      // --- PROCESSOR ---
       otelcol.processor.batch "shop_batch" {
         output {
           metrics = [otelcol.exporter.prometheus.mimir_shop_converter.input]
@@ -129,7 +195,6 @@ alloy:
 
       // --- EXPORTERS (devteam-1) ---
 
-      // 1. Traces -> Tempo
       otelcol.exporter.otlp "tempo_shop" {
         client {
           endpoint = "tempo.observability-prd.svc:4317"
@@ -138,7 +203,6 @@ alloy:
         }
       }
 
-      // 2. Logs -> Loki
       otelcol.exporter.loki "loki_shop" {
         forward_to = [loki.write.loki_shop_client.receiver]
       }
@@ -150,7 +214,6 @@ alloy:
         }
       }
 
-      // 3. Metrics -> Mimir (OTLP to Prometheus conversion)
       otelcol.exporter.prometheus "mimir_shop_converter" {
         forward_to = [prometheus.remote_write.mimir_shop.receiver]
       }
@@ -162,10 +225,10 @@ alloy:
         }
       }
 
-# Enable the controller
+# Configuration for DaemonSet + HostNetwork 
+# (Required for K8sAttributes processor to see real source IPs)
 controller:
   type: daemonset
-  # Improve stability for Kubelet scraping
   hostNetwork: true 
   dnsPolicy: ClusterFirstWithHostNet
 

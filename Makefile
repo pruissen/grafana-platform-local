@@ -1,4 +1,4 @@
-.PHONY: all install-k3s install-argocd install-prereqs install-mimir install-loki install-tempo install-grafana install-alloy install-demo install-all uninstall-all clean clean-minio clean-mimir clean-loki clean-tempo clean-grafana clean-alloy clean-demo bootstrap forward nuke
+.PHONY: all install-k3s install-argocd install-prereqs install-mimir install-loki install-tempo install-grafana install-alloy install-demo install-all uninstall-all remove-all clean clean-minio clean-mimir clean-loki clean-tempo clean-grafana clean-alloy clean-demo bootstrap forward nuke
 
 USER_NAME ?= $(shell whoami)
 NODE_IFACE ?= $(shell ip route get 1.1.1.1 | awk '{print $$5;exit}')
@@ -11,7 +11,11 @@ all: install-k3s install-argocd install-all
 
 install-all: install-prereqs install-mimir install-loki install-tempo install-grafana install-alloy install-demo bootstrap
 
+# Standard uninstall (removes apps, keeps cluster)
 uninstall-all: uninstall-demo uninstall-alloy uninstall-grafana uninstall-tempo uninstall-loki uninstall-mimir uninstall-prereqs
+
+# ☢️ Total cleanup: Uninstalls apps AND nukes the K3s cluster
+remove-all: uninstall-all nuke
 
 # ---------------------------------------------------------
 # 1. INFRASTRUCTURE
@@ -184,11 +188,15 @@ clean-demo:
 # ---------------------------------------------------------
 bootstrap:
 	@echo "--- 🚀 Bootstrapping Grafana Orgs & Dashboards ---"
-	@# Ensure dependencies (requests) are installed for the python script
+	@# 1. Start Port Forward so python script can connect to localhost:3000
+	@echo "🔌 Establishing connection to Grafana..."
+	@bash scripts/portforward-grafana.sh start
+	@echo "⏳ Waiting 5s for connection..."
+	@sleep 5
+	
+	@# 2. Run Python Automation
 	@pip3 install requests >/dev/null 2>&1 || true
-	@# 1. Create Orgs & Datasources
 	@python3 scripts/manage.py --bootstrap-orgs
-	@# 2. Import Dashboards
 	@python3 scripts/manage.py --import-dashboards
 
 forward:

@@ -25,6 +25,7 @@ loki:
       endpoint: http://minio-enterprise.observability-prd.svc:9000
       s3ForcePathStyle: true
       insecure: true
+      # These variables are now injected by the secret configured below
       accessKeyId: "${LOKI_S3_ACCESS_KEY}"
       secretAccessKey: "${LOKI_S3_SECRET_KEY}"
 
@@ -53,8 +54,13 @@ singleBinary:
     enabled: true
     size: 10Gi
     storageClassName: local-path
+  
+  # ✅ INJECT SECRETS HERE
+  extraEnvFrom:
+    - secretRef:
+        name: loki-s3-credentials
 
-# 2. DISABLE Distributed Components (Fixes the validation error)
+# 2. DISABLE Distributed Components
 write:
   replicas: 0
 read:
@@ -69,16 +75,3 @@ gateway:
     type: ClusterIP
   ingress:
     enabled: false
-
-# 4. Disable Self-Monitoring
-monitoring:
-  dashboards:
-    enabled: false
-  rules:
-    enabled: false
-  serviceMonitor:
-    enabled: false
-  selfMonitoring:
-    enabled: false
-    lokiCanary:
-      enabled: false

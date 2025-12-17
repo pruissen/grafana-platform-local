@@ -1,5 +1,3 @@
-# terraform/main.tf
-
 # -------------------------------------------------------------------
 # 2. NAMESPACES
 # -------------------------------------------------------------------
@@ -182,14 +180,14 @@ resource "kubectl_manifest" "mimir" {
 # -------------------------------------------------------------------
 # 6. LOKI (Logs)
 # -------------------------------------------------------------------
-# A. Generate S3 Credentials for Loki (Reusing MinIO Admin)
+# A. Generate S3 Credentials for Loki (Used in loki.yaml env variables)
 resource "kubernetes_secret_v1" "loki_s3_creds" {
   metadata {
     name      = "loki-s3-credentials"
     namespace = "observability-prd"
   }
   data = {
-    # Using environment variables format if needed by chart, or just reuse MinIO secret
+    # Matches ${LOKI_S3_ACCESS_KEY} in loki.yaml
     LOKI_S3_ACCESS_KEY = "admin"
     LOKI_S3_SECRET_KEY = random_password.minio_root_password.result
   }
@@ -197,7 +195,8 @@ resource "kubernetes_secret_v1" "loki_s3_creds" {
 }
 
 resource "kubectl_manifest" "loki" {
-  depends_on = [helm_release.argocd, kubectl_manifest.minio]
+  # Added dependency on loki_s3_creds
+  depends_on = [helm_release.argocd, kubectl_manifest.minio, kubernetes_secret_v1.loki_s3_creds]
   yaml_body = yamlencode({
     apiVersion = "argoproj.io/v1alpha1"
     kind       = "Application"
@@ -221,9 +220,8 @@ resource "kubectl_manifest" "loki" {
       source = {
         repoURL        = "https://grafana.github.io/helm-charts"
         chart          = "loki"
-        targetRevision = "6.24.0" # Stable Single Binary / Simple Scalable
+        targetRevision = "6.24.0"
         helm = {
-          # Ensure you have k8s/values/loki.yaml created!
           values = file("${path.module}/../k8s/values/loki.yaml")
         }
       }
