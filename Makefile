@@ -9,7 +9,7 @@ NODE_IP ?= $(shell ip route get 1.1.1.1 | awk '{print $$7;exit}')
 # ---------------------------------------------------------
 all: install-k3s install-argocd install-all
 
-install-all: install-prereqs install-mimir install-loki install-tempo install-grafana install-alloy install-demo bootstrap
+install-all: install-prereqs install-mimir install-loki install-tempo install-grafana bootstrap install-alloy install-demo forward
 
 # Standard uninstall (removes apps, keeps cluster)
 uninstall-all: uninstall-demo uninstall-alloy uninstall-grafana uninstall-tempo uninstall-loki uninstall-mimir uninstall-prereqs
