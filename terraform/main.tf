@@ -1,4 +1,5 @@
 # terraform/main.tf
+
 # -------------------------------------------------------------------
 # 2. NAMESPACES
 # -------------------------------------------------------------------
@@ -95,8 +96,9 @@ resource "kubernetes_secret_v1" "loki_s3_creds" {
     namespace = "observability-prd"
   }
   data = {
-    LOKI_S3_ACCESS_KEY = "admin"
-    LOKI_S3_SECRET_KEY = random_password.minio_root_password.result
+    # ✅ FIX: Use standard AWS Env Var names for auto-detection
+    AWS_ACCESS_KEY_ID     = "admin"
+    AWS_SECRET_ACCESS_KEY = random_password.minio_root_password.result
   }
   type = "Opaque"
 }
@@ -107,8 +109,9 @@ resource "kubernetes_secret_v1" "tempo_s3_creds" {
     namespace = "observability-prd"
   }
   data = {
-    TEMPO_S3_ACCESS_KEY = "admin"
-    TEMPO_S3_SECRET_KEY = random_password.minio_root_password.result
+    # ✅ FIX: Use standard AWS Env Var names for auto-detection
+    AWS_ACCESS_KEY_ID     = "admin"
+    AWS_SECRET_ACCESS_KEY = random_password.minio_root_password.result
   }
   type = "Opaque"
 }
@@ -376,7 +379,7 @@ resource "kubectl_manifest" "astronomy_shop" {
       source = {
         repoURL        = "https://open-telemetry.github.io/opentelemetry-helm-charts"
         chart          = "opentelemetry-demo"
-        targetRevision = "0.31.0" # 🔙 REVERTED to 0.31.0
+        targetRevision = "0.31.0"
         helm = {
           values = file("${path.module}/../k8s/values/astronomy-shop.yaml")
         }

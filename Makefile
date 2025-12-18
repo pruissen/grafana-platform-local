@@ -188,7 +188,8 @@ clean-alloy:
 install-demo:
 	@echo "--- Installing Astronomy Shop ---"
 	cd terraform && terraform apply -auto-approve -target=kubectl_manifest.astronomy_shop
-	@$(call wait_for_pods,devteam-1,app.kubernetes.io/name=frontend-proxy)
+	# ⚠️ FIX: Use 'component=frontendProxy' (matches chart v0.31.0 behavior)
+	@$(call wait_for_pods,devteam-1,app.kubernetes.io/component=frontendProxy)
 
 uninstall-demo:
 	@echo "--- Removing Astronomy Shop ---"
