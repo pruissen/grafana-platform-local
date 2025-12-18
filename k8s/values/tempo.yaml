@@ -3,9 +3,10 @@
 
 # 🔒 INJECT CREDENTIALS
 # Injects AWS_ACCESS_KEY_ID & AWS_SECRET_ACCESS_KEY
-extraEnvFrom:
-  - secretRef:
-      name: tempo-s3-credentials
+global:
+  extraEnvFrom:
+    - secretRef:
+        name: tempo-s3-credentials
 
 tempo:
   # 🔒 MULTI-TENANCY ENABLED (Requires X-Scope-OrgID header)
