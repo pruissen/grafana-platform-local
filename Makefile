@@ -1,20 +1,35 @@
-.PHONY: all install-k3s install-argocd install-prereqs install-mimir install-loki install-tempo install-grafana install-alloy install-demo install-all uninstall-all remove-all clean clean-minio clean-mimir clean-loki clean-tempo clean-grafana clean-alloy clean-demo bootstrap forward nuke
+.PHONY: all install-k3s install-argocd install-prereqs install-mimir install-loki install-tempo install-grafana install-alloy install-demo install-all uninstall-all remove-all clean clean-mimir clean-loki clean-tempo clean-grafana clean-alloy clean-demo bootstrap forward nuke
 
 USER_NAME ?= $(shell whoami)
 NODE_IFACE ?= $(shell ip route get 1.1.1.1 | awk '{print $$5;exit}')
 NODE_IP ?= $(shell ip route get 1.1.1.1 | awk '{print $$7;exit}')
+
+# --- HELPER FUNCTIONS ---
+# Macro to wait for all pods in a namespace to be ready
+# Usage: $(call wait_for_pods,namespace,label-selector)
+define wait_for_pods
+	@echo "⏳ Waiting for pods in '$(1)' to be ready..."
+	@timeout=300; \
+	until kubectl get pods -n $(1) -l $(2) -o jsonpath='{.items[*].status.phase}' | grep -v "Pending" | grep -v "ContainerCreating" | grep -q "Running\|Succeeded"; do \
+		echo "   ...waiting for $(1) pods ($(2))..."; \
+		sleep 5; \
+		timeout=$$((timeout-5)); \
+		if [ $$timeout -le 0 ]; then echo "❌ Timeout waiting for $(1)"; exit 1; fi; \
+	done
+	@# Double check readiness probes
+	@kubectl wait --for=condition=ready pod -n $(1) -l $(2) --timeout=300s >/dev/null 2>&1 || true
+	@echo "✅ Pods in '$(1)' are ready."
+endef
 
 # ---------------------------------------------------------
 # MASTER FLOW
 # ---------------------------------------------------------
 all: install-k3s install-argocd install-all
 
-install-all: install-prereqs install-mimir install-loki install-tempo install-grafana bootstrap install-alloy install-demo forward
+install-all: install-prereqs install-loki install-mimir install-tempo install-grafana install-alloy install-demo bootstrap
 
-# Standard uninstall (removes apps, keeps cluster)
-uninstall-all: uninstall-demo uninstall-alloy uninstall-grafana uninstall-tempo uninstall-loki uninstall-mimir uninstall-prereqs
+uninstall-all: uninstall-demo uninstall-alloy uninstall-grafana uninstall-tempo uninstall-mimir uninstall-loki uninstall-prereqs
 
-# ☢️ Total cleanup: Uninstalls apps AND nukes the K3s cluster
 remove-all: uninstall-all nuke
 
 # ---------------------------------------------------------
@@ -29,21 +44,17 @@ install-k3s:
 		chmod +x scripts/setup-virtual-disk.sh; \
 		sudo bash scripts/setup-virtual-disk.sh; \
 	fi
-
 	@echo "--- 1. Detected Network ---"
 	@echo "   Interface: $(NODE_IFACE)"
 	@echo "   IP:        $(NODE_IP)"
 	@echo "---------------------------"
-
 	@echo "--- 2. Installing K3s ---"
 	curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="server --node-ip=$(NODE_IP) --flannel-iface=$(NODE_IFACE) --bind-address=$(NODE_IP) --advertise-address=$(NODE_IP) --disable=traefik" sh -
-	
 	@echo "--- 3. Configuring Permissions ---"
 	sudo mkdir -p ~/.kube
 	sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config
 	sudo chown $(USER_NAME):$(USER_NAME) ~/.kube/config
 	chmod 600 ~/.kube/config
-	
 	@echo "--- 4. Waiting for Cluster ---"
 	@timeout=120; until kubectl get nodes | grep -q "Ready"; do echo "Waiting for node..."; sleep 2; done
 	@echo "✅ K3s Ready on $(NODE_IP)."
@@ -51,42 +62,60 @@ install-k3s:
 install-argocd:
 	@echo "--- Installing ArgoCD ---"
 	cd terraform && terraform init && terraform apply -auto-approve -target=helm_release.argocd
-	@sleep 10
+	@$(call wait_for_pods,argocd-system,app.kubernetes.io/name=argocd-server)
 	@bash scripts/portforward-argocd.sh start
 
 # ---------------------------------------------------------
 # 2. SEPARATE COMPONENTS & CLEANUP
 # ---------------------------------------------------------
 
-# --- MINIO ---
+# --- PRE-REQUISITES (Secrets & KSM - No Standalone MinIO) ---
 install-prereqs:
-	@echo "--- Installing Enterprise MinIO & Secrets ---"
+	@echo "--- Installing Secrets & KSM ---"
 	cd terraform && terraform apply -auto-approve \
 		-target=random_password.minio_root_password \
 		-target=kubernetes_secret_v1.minio_creds \
 		-target=kubernetes_secret_v1.mimir_s3_creds \
-		-target=helm_release.ksm \
-		-target=kubectl_manifest.minio
-	@echo "⏳ Waiting for MinIO to initialize buckets..."
-	@sleep 15
+		-target=kubernetes_secret_v1.loki_s3_creds \
+		-target=kubernetes_secret_v1.tempo_s3_creds \
+		-target=helm_release.ksm
+	@echo "✅ Secrets & KSM Installed."
 
 uninstall-prereqs:
-	@echo "--- Uninstalling MinIO ---"
+	@echo "--- Uninstalling Secrets & KSM ---"
 	cd terraform && terraform destroy -auto-approve \
-		-target=kubectl_manifest.minio \
-		-target=helm_release.ksm
-	@make clean-minio
+		-target=helm_release.ksm \
+		-target=kubernetes_secret_v1.minio_creds \
+		-target=kubernetes_secret_v1.mimir_s3_creds \
+		-target=kubernetes_secret_v1.loki_s3_creds \
+		-target=kubernetes_secret_v1.tempo_s3_creds
 
-clean-minio:
-	@echo "🧹 Cleaning up MinIO Resources..."
-	@kubectl delete all -n observability-prd -l app.kubernetes.io/name=minio --force --grace-period=0 2>/dev/null || true
+# --- LOKI (Hosts MinIO - Critical Dependency) ---
+install-loki:
+	@echo "--- Installing Loki (with Embedded MinIO) ---"
+	cd terraform && terraform apply -auto-approve -target=kubectl_manifest.loki
+	@echo "⏳ Waiting for Loki & MinIO to initialize..."
+	@$(call wait_for_pods,observability-prd,app.kubernetes.io/name=loki)
+	@# Wait specifically for the 0th pod to be fully up (MinIO host)
+	@kubectl wait --for=condition=ready pod -n observability-prd loki-0 --timeout=300s
+	@echo "✅ Loki (Storage Backend) is Ready."
+
+uninstall-loki:
+	@echo "--- Uninstalling Loki ---"
+	cd terraform && terraform destroy -auto-approve -target=kubectl_manifest.loki
+	@make clean-loki
+
+clean-loki:
+	@echo "🧹 Cleaning up Loki & MinIO Resources..."
+	@kubectl delete all -n observability-prd -l app.kubernetes.io/name=loki --force --grace-period=0 2>/dev/null || true
+	@kubectl delete pvc -n observability-prd -l app.kubernetes.io/name=loki --force --grace-period=0 2>/dev/null || true
 	@kubectl delete pvc -n observability-prd -l app.kubernetes.io/name=minio --force --grace-period=0 2>/dev/null || true
-	@kubectl delete secret -n observability-prd minio-creds mimir-s3-credentials --force --grace-period=0 2>/dev/null || true
 
 # --- MIMIR ---
 install-mimir:
 	@echo "--- Installing Mimir ---"
 	cd terraform && terraform apply -auto-approve -target=kubectl_manifest.mimir
+	@$(call wait_for_pods,observability-prd,app.kubernetes.io/name=mimir)
 
 uninstall-mimir:
 	@echo "--- Uninstalling Mimir ---"
@@ -97,28 +126,12 @@ clean-mimir:
 	@echo "🧹 Cleaning up Mimir Resources..."
 	@kubectl delete all -n observability-prd -l app.kubernetes.io/name=mimir --force --grace-period=0 2>/dev/null || true
 	@kubectl delete pvc -n observability-prd -l app.kubernetes.io/name=mimir --force --grace-period=0 2>/dev/null || true
-	@kubectl delete cm -n observability-prd -l app.kubernetes.io/name=mimir --force --grace-period=0 2>/dev/null || true
-
-# --- LOKI ---
-install-loki:
-	@echo "--- Installing Loki ---"
-	cd terraform && terraform apply -auto-approve -target=kubectl_manifest.loki
-
-uninstall-loki:
-	@echo "--- Uninstalling Loki ---"
-	cd terraform && terraform destroy -auto-approve -target=kubectl_manifest.loki
-	@make clean-loki
-
-clean-loki:
-	@echo "🧹 Cleaning up Loki Resources..."
-	@kubectl delete all -n observability-prd -l app.kubernetes.io/name=loki --force --grace-period=0 2>/dev/null || true
-	@kubectl delete pvc -n observability-prd -l app.kubernetes.io/name=loki --force --grace-period=0 2>/dev/null || true
-	@kubectl delete cm -n observability-prd -l app.kubernetes.io/name=loki --force --grace-period=0 2>/dev/null || true
 
 # --- TEMPO ---
 install-tempo:
 	@echo "--- Installing Tempo ---"
 	cd terraform && terraform apply -auto-approve -target=kubectl_manifest.tempo
+	@$(call wait_for_pods,observability-prd,app.kubernetes.io/name=tempo)
 
 uninstall-tempo:
 	@echo "--- Uninstalling Tempo ---"
@@ -129,7 +142,6 @@ clean-tempo:
 	@echo "🧹 Cleaning up Tempo Resources..."
 	@kubectl delete all -n observability-prd -l app.kubernetes.io/name=tempo --force --grace-period=0 2>/dev/null || true
 	@kubectl delete pvc -n observability-prd -l app.kubernetes.io/name=tempo --force --grace-period=0 2>/dev/null || true
-	@kubectl delete cm -n observability-prd -l app.kubernetes.io/name=tempo --force --grace-period=0 2>/dev/null || true
 
 # --- GRAFANA ---
 install-grafana:
@@ -138,6 +150,7 @@ install-grafana:
 		-target=random_password.grafana_admin_password \
 		-target=kubernetes_secret_v1.grafana_creds \
 		-target=kubectl_manifest.grafana
+	@$(call wait_for_pods,observability-prd,app.kubernetes.io/name=grafana)
 
 uninstall-grafana:
 	@echo "--- Uninstalling Grafana ---"
@@ -150,10 +163,12 @@ clean-grafana:
 	@kubectl delete pvc -n observability-prd -l app.kubernetes.io/name=grafana --force --grace-period=0 2>/dev/null || true
 	@kubectl delete secret -n observability-prd grafana-admin-creds --force --grace-period=0 2>/dev/null || true
 
-# --- ALLOY (Collector/Router) ---
+# --- ALLOY ---
 install-alloy:
 	@echo "--- Installing Grafana Alloy ---"
 	cd terraform && terraform apply -auto-approve -target=kubectl_manifest.alloy
+	@echo "⏳ Waiting for Alloy DaemonSet..."
+	@kubectl rollout status daemonset/alloy -n observability-prd --timeout=120s
 
 uninstall-alloy: remove-alloy
 	@echo "✅ Alloy Uninstalled."
@@ -169,10 +184,11 @@ clean-alloy:
 	@kubectl delete pvc -n observability-prd -l app.kubernetes.io/name=alloy --force --grace-period=0 2>/dev/null || true
 	@kubectl delete daemonset -n observability-prd alloy --force --grace-period=0 2>/dev/null || true
 
-# --- OTEL DEMO (Astronomy Shop) ---
+# --- DEMO ---
 install-demo:
-	@echo "--- Installing Astronomy Shop (DevTeam-1) ---"
+	@echo "--- Installing Astronomy Shop ---"
 	cd terraform && terraform apply -auto-approve -target=kubectl_manifest.astronomy_shop
+	@$(call wait_for_pods,devteam-1,app.kubernetes.io/name=frontend-proxy)
 
 uninstall-demo:
 	@echo "--- Removing Astronomy Shop ---"
@@ -184,17 +200,16 @@ clean-demo:
 	@kubectl delete namespace devteam-1 --force --grace-period=0 2>/dev/null || true
 
 # ---------------------------------------------------------
-# 3. UTILITIES & BOOTSTRAP
+# 3. UTILITIES
 # ---------------------------------------------------------
 bootstrap:
 	@echo "--- 🚀 Bootstrapping Grafana Orgs & Dashboards ---"
-	@# 1. Start Port Forward so python script can connect to localhost:3000
 	@echo "🔌 Establishing connection to Grafana..."
-	@bash scripts/portforward-grafana.sh start
-	@echo "⏳ Waiting 5s for connection..."
-	@sleep 5
-	
-	@# 2. Run Python Automation
+	@# Ensure Grafana is actually ready before checking port forward
+	@kubectl wait --for=condition=ready pod -n observability-prd -l app.kubernetes.io/name=grafana --timeout=60s
+	@bash scripts/portforward-grafana.sh restart
+	@echo "⏳ Waiting 10s for API..."
+	@sleep 10
 	@pip3 install requests >/dev/null 2>&1 || true
 	@python3 scripts/manage.py --bootstrap-orgs
 	@python3 scripts/manage.py --import-dashboards
@@ -206,9 +221,6 @@ clean:
 	@echo "--- Destroying ALL Terraform Resources ---"
 	cd terraform && terraform destroy -auto-approve
 
-# ---------------------------------------------------------
-# 4. NUCLEAR OPTION
-# ---------------------------------------------------------
 nuke:
 	@echo "--- ☢️  NUKING CLUSTER ☢️  ---"
 	@chmod +x scripts/nuke-microk8s.sh 2>/dev/null || true

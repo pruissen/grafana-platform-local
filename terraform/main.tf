@@ -1,3 +1,4 @@
+# terraform/main.tf
 # -------------------------------------------------------------------
 # 2. NAMESPACES
 # -------------------------------------------------------------------
@@ -20,36 +21,31 @@ resource "kubernetes_namespace" "devteam_1" {
 }
 
 # -------------------------------------------------------------------
-# 3. ARGOCD (The GitOps Engine)
+# 3. ARGOCD
 # -------------------------------------------------------------------
 resource "helm_release" "argocd" {
   name       = "argocd"
   repository = "https://argoproj.github.io/argo-helm"
   chart      = "argo-cd"
-  version    = "5.51.6" # Stable version
+  version    = "5.51.6"
   namespace  = kubernetes_namespace.argocd.metadata[0].name
 
   set {
     name  = "server.service.type"
     value = "ClusterIP"
   }
-  
-  # Disable HA/Redis HA for local dev to save resources
   set {
     name  = "redis-ha.enabled"
     value = "false"
   }
-  
   set {
     name  = "controller.replicas"
     value = "1"
   }
-  
   set {
     name  = "server.replicas"
     value = "1"
   }
-  
   set {
     name  = "repoServer.replicas"
     value = "1"
@@ -57,29 +53,30 @@ resource "helm_release" "argocd" {
 }
 
 # -------------------------------------------------------------------
-# 4. SHARED SECRETS & MINIO (Storage)
+# 4. SHARED SECRETS & CREDENTIALS
 # -------------------------------------------------------------------
 
-# A. Generate Random Password for MinIO Root
+# A. Generate Random Password (Shared by all components)
 resource "random_password" "minio_root_password" {
   length  = 24
   special = false
 }
 
-# B. Create Secret for MinIO Server (Used by the MinIO Chart)
+# B. Secret for MinIO Server (Used by Loki's Embedded MinIO)
 resource "kubernetes_secret_v1" "minio_creds" {
   metadata {
     name      = "minio-creds"
     namespace = "observability-prd"
   }
   data = {
+    # Keys expected by the MinIO Helm Chart
     rootUser     = "admin"
     rootPassword = random_password.minio_root_password.result
   }
   type = "Opaque"
 }
 
-# C. Create AWS-Compatible Secret for Mimir (Used by Mimir to access MinIO)
+# C. Secrets for Clients (Mimir, Loki, Tempo) to access MinIO
 resource "kubernetes_secret_v1" "mimir_s3_creds" {
   metadata {
     name      = "mimir-s3-credentials"
@@ -92,14 +89,54 @@ resource "kubernetes_secret_v1" "mimir_s3_creds" {
   type = "Opaque"
 }
 
-# D. MinIO Application (Official Chart)
-resource "kubectl_manifest" "minio" {
-  depends_on = [helm_release.argocd, kubernetes_secret_v1.minio_creds]
+resource "kubernetes_secret_v1" "loki_s3_creds" {
+  metadata {
+    name      = "loki-s3-credentials"
+    namespace = "observability-prd"
+  }
+  data = {
+    LOKI_S3_ACCESS_KEY = "admin"
+    LOKI_S3_SECRET_KEY = random_password.minio_root_password.result
+  }
+  type = "Opaque"
+}
+
+resource "kubernetes_secret_v1" "tempo_s3_creds" {
+  metadata {
+    name      = "tempo-s3-credentials"
+    namespace = "observability-prd"
+  }
+  data = {
+    TEMPO_S3_ACCESS_KEY = "admin"
+    TEMPO_S3_SECRET_KEY = random_password.minio_root_password.result
+  }
+  type = "Opaque"
+}
+
+# D. Kube State Metrics
+resource "helm_release" "ksm" {
+  name       = "kube-state-metrics"
+  repository = "https://prometheus-community.github.io/helm-charts"
+  chart      = "kube-state-metrics"
+  namespace  = "observability-prd"
+  version    = "5.16.0"
+}
+
+# -------------------------------------------------------------------
+# 5. LOKI (Logs + Embedded MinIO)
+# -------------------------------------------------------------------
+resource "kubectl_manifest" "loki" {
+  # Now depends on the secrets, as Loki hosts the storage
+  depends_on = [
+    helm_release.argocd, 
+    kubernetes_secret_v1.loki_s3_creds, 
+    kubernetes_secret_v1.minio_creds
+  ]
   yaml_body = yamlencode({
     apiVersion = "argoproj.io/v1alpha1"
     kind       = "Application"
     metadata = {
-      name       = "minio-enterprise"
+      name       = "loki"
       namespace  = "argocd-system"
       finalizers = ["resources-finalizer.argocd.argoproj.io"]
     }
@@ -116,33 +153,25 @@ resource "kubectl_manifest" "minio" {
         }
       }
       source = {
-        repoURL        = "https://charts.min.io/"
-        chart          = "minio"
-        targetRevision = "5.3.0"
+        repoURL        = "https://grafana.github.io/helm-charts"
+        chart          = "loki"
+        targetRevision = "6.24.0"
         helm = {
-          values = file("${path.module}/../k8s/values/minio-enterprise.yaml")
+          values = file("${path.module}/../k8s/values/loki.yaml")
         }
       }
     }
   })
 }
 
-# E. Kube State Metrics (Prerequisite for Mimir/Prometheus Scraping)
-resource "helm_release" "ksm" {
-  name       = "kube-state-metrics"
-  repository = "https://prometheus-community.github.io/helm-charts"
-  chart      = "kube-state-metrics"
-  namespace  = "observability-prd"
-  version    = "5.16.0"
-}
-
 # -------------------------------------------------------------------
-# 5. MIMIR (Metrics)
+# 6. MIMIR (Metrics)
 # -------------------------------------------------------------------
 resource "kubectl_manifest" "mimir" {
+  # Depends on Loki now (since Loki provides the S3 endpoint)
   depends_on = [
     helm_release.argocd, 
-    kubectl_manifest.minio, 
+    kubectl_manifest.loki,
     kubernetes_secret_v1.mimir_s3_creds
   ]
   yaml_body = yamlencode({
@@ -178,75 +207,10 @@ resource "kubectl_manifest" "mimir" {
 }
 
 # -------------------------------------------------------------------
-# 6. LOKI (Logs)
-# -------------------------------------------------------------------
-# A. Generate S3 Credentials for Loki (Used in loki.yaml env variables)
-resource "kubernetes_secret_v1" "loki_s3_creds" {
-  metadata {
-    name      = "loki-s3-credentials"
-    namespace = "observability-prd"
-  }
-  data = {
-    # Matches ${LOKI_S3_ACCESS_KEY} in loki.yaml
-    LOKI_S3_ACCESS_KEY = "admin"
-    LOKI_S3_SECRET_KEY = random_password.minio_root_password.result
-  }
-  type = "Opaque"
-}
-
-resource "kubectl_manifest" "loki" {
-  # Added dependency on loki_s3_creds
-  depends_on = [helm_release.argocd, kubectl_manifest.minio, kubernetes_secret_v1.loki_s3_creds]
-  yaml_body = yamlencode({
-    apiVersion = "argoproj.io/v1alpha1"
-    kind       = "Application"
-    metadata = {
-      name       = "loki"
-      namespace  = "argocd-system"
-      finalizers = ["resources-finalizer.argocd.argoproj.io"]
-    }
-    spec = {
-      project = "default"
-      destination = {
-        server    = "https://kubernetes.default.svc"
-        namespace = "observability-prd"
-      }
-      syncPolicy = {
-        automated = {
-          prune    = true
-          selfHeal = true
-        }
-      }
-      source = {
-        repoURL        = "https://grafana.github.io/helm-charts"
-        chart          = "loki"
-        targetRevision = "6.24.0"
-        helm = {
-          values = file("${path.module}/../k8s/values/loki.yaml")
-        }
-      }
-    }
-  })
-}
-
-# -------------------------------------------------------------------
 # 7. TEMPO (Traces)
 # -------------------------------------------------------------------
-# A. Generate S3 Credentials for Tempo
-resource "kubernetes_secret_v1" "tempo_s3_creds" {
-  metadata {
-    name      = "tempo-s3-credentials"
-    namespace = "observability-prd"
-  }
-  data = {
-    TEMPO_S3_ACCESS_KEY = "admin"
-    TEMPO_S3_SECRET_KEY = random_password.minio_root_password.result
-  }
-  type = "Opaque"
-}
-
 resource "kubectl_manifest" "tempo" {
-  depends_on = [helm_release.argocd, kubectl_manifest.minio, kubernetes_secret_v1.tempo_s3_creds]
+  depends_on = [helm_release.argocd, kubectl_manifest.loki, kubernetes_secret_v1.tempo_s3_creds]
   yaml_body = yamlencode({
     apiVersion = "argoproj.io/v1alpha1"
     kind       = "Application"
@@ -280,15 +244,13 @@ resource "kubectl_manifest" "tempo" {
 }
 
 # -------------------------------------------------------------------
-# 8. GRAFANA (Visualization)
+# 8. GRAFANA
 # -------------------------------------------------------------------
-# A. Generate Random Admin Password
 resource "random_password" "grafana_admin_password" {
   length  = 16
   special = false
 }
 
-# B. Create Secret
 resource "kubernetes_secret_v1" "grafana_creds" {
   metadata {
     name      = "grafana-admin-creds"
@@ -342,7 +304,7 @@ resource "kubectl_manifest" "grafana" {
 }
 
 # -------------------------------------------------------------------
-# 9. ALLOY (Collector / Router)
+# 9. ALLOY
 # -------------------------------------------------------------------
 resource "kubectl_manifest" "alloy" {
   depends_on = [
@@ -414,7 +376,7 @@ resource "kubectl_manifest" "astronomy_shop" {
       source = {
         repoURL        = "https://open-telemetry.github.io/opentelemetry-helm-charts"
         chart          = "opentelemetry-demo"
-        targetRevision = "0.31.0"
+        targetRevision = "0.31.0" # 🔙 REVERTED to 0.31.0
         helm = {
           values = file("${path.module}/../k8s/values/astronomy-shop.yaml")
         }

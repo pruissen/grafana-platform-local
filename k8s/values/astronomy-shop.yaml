@@ -1,23 +1,45 @@
-# OpenTelemetry Demo Helm Chart Values
-# All observability backend features disabled, using external OTEL collector
-opentelemetry-collector:
-  enabled: false
-jaeger:
-  enabled: false
-prometheus:
-  enabled: false
-grafana:
-  enabled: false
-opensearch:
-  enabled: false
+# k8s/values/astronomy-shop.yaml
+# Compatible with opentelemetry-demo chart v0.31.0
+
+# 1. Global Configuration
 default:
-  envOverrides:
-    # Changed protocol to grpc for port 4317
-    - name: OTEL_EXPORTER_OTLP_PROTOCOL
-      value: "grpc"
-    # Updated all endpoints to use standard gRPC port 4317
+  env:
+    - name: OTEL_SERVICE_NAME
+      value: "astro-demo-app"
+    - name: OTEL_COLLECTOR_NAME
+      value: "alloy"
     - name: OTEL_EXPORTER_OTLP_ENDPOINT
       value: "http://alloy.observability-prd.svc:4317"
+    - name: OTEL_RESOURCE_ATTRIBUTES
+      value: "service.name=astro-demo-app,space=devteam-1,deployment.environment=production"
+
+# 2. Components (Legacy camelCase names for 0.31.0)
 components:
+  
+  frontendProxy:
+    service:
+      type: ClusterIP
+      port: 8080
+
   loadgenerator:
     enabled: true
+    env:
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: "http://alloy.observability-prd.svc:4317"
+
+# 3. Disable Internal Stack
+# In 0.31.0, these dependencies are configured at the root level
+opentelemetry-collector:
+  enabled: false
+
+jaeger:
+  enabled: false
+
+prometheus:
+  enabled: false
+
+grafana:
+  enabled: false
+
+opensearch:
+  enabled: false

@@ -1,52 +1,58 @@
-# Disable Ingress
-ingress:
-  enabled: false
+# k8s/values/tempo.yaml
+# Chart Version: 1.10.1
 
-# Inject Credentials via Environment Variables
-envFrom:
+fullnameOverride: "tempo"
+
+# 🔒 INJECT CREDENTIALS
+# Injects AWS_ACCESS_KEY_ID & AWS_SECRET_ACCESS_KEY
+extraEnvFrom:
   - secretRef:
       name: tempo-s3-credentials
 
 tempo:
-  # 🔒 MULTI-TENANCY ENABLED
-  multitenancyEnabled: true
+  # 🔒 MULTI-TENANCY ENABLED (Requires X-Scope-OrgID header)
+  multitenancy:
+    enabled: true
 
-# Explicit Configuration
-storage:
-  trace:
-    backend: s3
-    s3:
-      bucket: tempo-traces
-      endpoint: minio-enterprise.observability-prd.svc:9000
-      insecure: true
-      # We reference the Env Vars injected above
-      access_key: "${TEMPO_S3_ACCESS_KEY}"
-      secret_key: "${TEMPO_S3_SECRET_KEY}"
-      forcepathstyle: true
+  # Storage Configuration
+  storage:
+    trace:
+      backend: s3
+      s3:
+        bucket: tempo-data
+        endpoint: loki-minio.observability-prd.svc:9000
+        # ⚠️ REQUIRED: Force HTTP (MinIO does not have TLS)
+        insecure: true
+        # No credentials here - handled by extraEnvFrom
 
-# Persistence (Required for WAL)
-persistence:
-  enabled: true
-  size: 10Gi
-  storageClassName: local-path
+  # Retention (Managed by Compactor)
+  retention: 24h
 
-# Resources (Diet Mode)
-resources:
-  requests:
-    cpu: 50m
-    memory: 128Mi
-  limits:
-    cpu: 500m
-    memory: 512Mi
+# --- COMPONENT CONFIG ---
+ingester:
+  replicas: 1
+  config:
+    replication_factor: 1
 
-# Service Graph (Optional - enables metrics from traces)
+distributor:
+  config:
+    log_received_traces: false
+
+compactor:
+  config:
+    compaction:
+      block_retention: 24h
+
+# Metrics Generator (Creates metrics from traces)
 metricsGenerator:
   enabled: true
+  replicas: 1
   config:
     storage:
       remote_write:
         - url: http://mimir-nginx.observability-prd.svc:80/api/v1/push
           send_exemplars: true
-          # Note: In a strict multi-tenant setup, this push also needs a header.
-          # For now, it might fail silently or go to anonymous depending on Mimir config.
-          # To fix properly, we'd need to route this through Alloy as well.
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9095

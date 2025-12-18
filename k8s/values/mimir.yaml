@@ -1,48 +1,49 @@
 # k8s/values/mimir.yaml
+# Chart Version: 5.6.0
 
-# Global Credentials
+# 🔒 INJECT CREDENTIALS
+# Injects AWS_ACCESS_KEY_ID & AWS_SECRET_ACCESS_KEY
 global:
   extraEnvFrom:
     - secretRef:
         name: mimir-s3-credentials
 
-# ---------------------------------------------------------------------
-# MAIN MIMIR CONFIGURATION
-# ---------------------------------------------------------------------
 mimir:
   image:
     repository: public.ecr.aws/bitnami/grafana-mimir
     tag: latest
 
-  # 🔒 MULTI-TENANCY ENABLED (Requires X-Scope-OrgID header)
+  # 🔒 MULTI-TENANCY ENABLED
   auth_enabled: true
 
   structuredConfig:
     
-    # Common Storage
+    # Common Storage Configuration
     common:
       storage:
         backend: s3
         s3:
-          endpoint: minio-enterprise.observability-prd.svc:9000
+          endpoint: loki-minio.observability-prd.svc:9000
+          bucket_name: mimir-blocks
+          # ⚠️ REQUIRED: Force HTTP (MinIO does not have TLS)
           insecure: true
 
-    # Blocks Storage
+    # Blocks Storage (Long-term)
     blocks_storage:
       backend: s3
       s3:
         bucket_name: mimir-blocks
-        endpoint: minio-enterprise.observability-prd.svc:9000
+        endpoint: loki-minio.observability-prd.svc:9000
         insecure: true
       tsdb:
         dir: /data/tsdb
 
-    # Ruler Storage
+    # Ruler Storage (Alert Rules)
     ruler_storage:
       backend: s3
       s3:
         bucket_name: mimir-ruler
-        endpoint: minio-enterprise.observability-prd.svc:9000
+        endpoint: loki-minio.observability-prd.svc:9000
         insecure: true
 
     # Alertmanager Storage
@@ -50,35 +51,31 @@ mimir:
       backend: s3
       s3:
         bucket_name: mimir-ruler
-        endpoint: minio-enterprise.observability-prd.svc:9000
+        endpoint: loki-minio.observability-prd.svc:9000
         insecure: true
     
-    # Usage Stats
     usage_stats:
       enabled: false
 
-    # --- REPLICATION FACTOR SETTINGS (Single Node Fixes) ---
-    
-    # 1. Ingester: CRITICAL FIX for "too many unhealthy instances"
+    # --- REPLICATION FACTOR SETTINGS ---
+    # Set to 1 because we are running single replicas per component
     ingester:
       ring:
         replication_factor: 1
     
-    # 2. Store Gateway
     store_gateway:
       sharding_ring:
         replication_factor: 1
 
-    # 3. Distributor
     distributor:
       ring:
         kvstore:
           store: memberlist
 
-# ---------------------------------------------------------------------
-# COMPONENT SCALING
-# ---------------------------------------------------------------------
-minio: { enabled: false }
+# --- COMPONENT SCALING ---
+# Disable Mimir's own MinIO (We use Loki's)
+minio:
+  enabled: false
 
 ingester:
   replicas: 1

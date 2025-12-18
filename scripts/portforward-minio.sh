@@ -7,24 +7,11 @@ NAMESPACE="observability-prd"
 # Ports: Local 9001 -> Remote 9001 (Console)
 LOCAL_PORT="9001"
 REMOTE_PORT="9001"
+SERVICE="svc/loki-minio-console"
 
 # ---------------------------------------------------------
 # FUNCTIONS
 # ---------------------------------------------------------
-
-get_service_name() {
-    # Try to find the correct console service name dynamically
-    if kubectl get svc -n "$NAMESPACE" minio-enterprise-console >/dev/null 2>&1; then
-        echo "svc/minio-enterprise-console"
-    elif kubectl get svc -n "$NAMESPACE" minio-console >/dev/null 2>&1; then
-        echo "svc/minio-console"
-    else
-        # Fallback for Bitnami/Standard charts
-        echo "svc/minio"
-    fi
-}
-
-SERVICE=$(get_service_name)
 
 show() {
     echo "------------------------------------------------------------------------"
