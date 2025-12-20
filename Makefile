@@ -26,7 +26,7 @@ endef
 # ---------------------------------------------------------
 all: install-k3s install-argocd install-all
 
-install-all: install-prereqs install-loki install-mimir install-tempo install-grafana install-alloy install-demo bootstrap
+install-all: install-prereqs install-loki install-mimir install-tempo install-grafana bootstrap install-alloy install-demo 
 
 uninstall-all: uninstall-demo uninstall-alloy uninstall-grafana uninstall-tempo uninstall-mimir uninstall-loki uninstall-prereqs
 

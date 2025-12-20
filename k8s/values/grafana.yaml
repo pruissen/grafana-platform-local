@@ -32,12 +32,11 @@ datasources:
       - name: Mimir
         type: prometheus
         uid: mimir
-        # Pointing to Mimir Nginx Gateway
-        url: http://mimir-mimir-distributed-nginx.observability-prd.svc:80/prometheus
+        # ✅ FIXED: Points to 'mimir-nginx' service
+        url: http://mimir-nginx.observability-prd.svc:80/prometheus
         access: proxy
         isDefault: true
         jsonData:
-          # ✅ Header Injection
           httpHeaderName1: "X-Scope-OrgID"
           timeInterval: "15s"
         secureJsonData:
@@ -47,11 +46,10 @@ datasources:
       - name: Loki
         type: loki
         uid: loki
-        # Pointing to Loki Gateway
+        # ✅ Correct: Points to 'loki-gateway'
         url: http://loki-gateway.observability-prd.svc:80
         access: proxy
         jsonData:
-          # ✅ Header Injection
           httpHeaderName1: "X-Scope-OrgID"
           derivedFields:
             - datasourceUid: tempo
@@ -61,16 +59,15 @@ datasources:
         secureJsonData:
           httpHeaderValue1: "tenant1"
 
-      # 3. TEMPO
+      # 3. TEMPO (Monolithic)
       - name: Tempo
         type: tempo
         uid: tempo
-        # Pointing to Tempo Query Frontend (Long name)
-        url: http://tempo-tempo-distributed-query-frontend.observability-prd.svc:3200
+        # ✅ FIXED: Points to Monolithic 'tempo' service (Port 3200)
+        url: http://tempo.observability-prd.svc:3200
         access: proxy
         basicAuth: false
         jsonData:
-          # ✅ Header Injection
           httpHeaderName1: "X-Scope-OrgID"
           tracesToLogsV2:
             datasourceUid: 'loki'

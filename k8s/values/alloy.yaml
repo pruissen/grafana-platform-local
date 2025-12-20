@@ -1,5 +1,16 @@
 # k8s/values/alloy.yaml
 alloy:
+  # ✅ CRITICAL: Expose OTLP ports so other apps can reach Alloy
+  extraPorts:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+
   configMap:
     content: |
       otelcol.receiver.otlp "default" {
@@ -20,7 +31,6 @@ alloy:
         }
       }
 
-      // ✅ FIX: Wrapped url/headers in 'endpoint' block
       otelcol.exporter.prometheus "mimir" {
         forward_to = [prometheus.remote_write.mimir.receiver]
       }
@@ -43,8 +53,8 @@ alloy:
 
       otelcol.exporter.otlp "tempo" {
         client {
-          // ✅ Correct: Matches 'tempo-distributor' service on port 4317
-          endpoint = "tempo-distributor.observability-prd.svc.cluster.local:4317"
+          // ✅ FIXED: Pointing to Monolithic 'tempo' service (not 'tempo-distributor')
+          endpoint = "tempo.observability-prd.svc.cluster.local:4317"
           headers = { "X-Scope-OrgID" = "tenant1" }
           tls { insecure = true }
         }

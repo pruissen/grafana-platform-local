@@ -8,27 +8,28 @@ default:
       value: "astro-demo-app"
     - name: OTEL_COLLECTOR_NAME
       value: "alloy"
+    # ✅ Connects to Alloy Service (gRPC Port)
     - name: OTEL_EXPORTER_OTLP_ENDPOINT
       value: "http://alloy.observability-prd.svc:4317"
     - name: OTEL_RESOURCE_ATTRIBUTES
       value: "service.name=astro-demo-app,space=devteam-1,deployment.environment=production"
 
-# 2. Components (Legacy camelCase names for 0.31.0)
+# 2. Components
+# Ensure Load Generator also talks to Alloy
 components:
+  loadgenerator:
+    enabled: true
+    env:
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: "http://alloy.observability-prd.svc:4317"
   
   frontendProxy:
     service:
       type: ClusterIP
       port: 8080
 
-  loadgenerator:
-    enabled: true
-    env:
-      - name: OTEL_EXPORTER_OTLP_ENDPOINT
-        value: "http://alloy.observability-prd.svc:4317"
-
 # 3. Disable Internal Stack
-# In 0.31.0, these dependencies are configured at the root level
+# We use our own Alloy, Jaeger(Tempo), Prometheus(Mimir), and Grafana
 opentelemetry-collector:
   enabled: false
 

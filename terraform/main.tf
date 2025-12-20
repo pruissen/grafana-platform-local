@@ -380,7 +380,7 @@ resource "kubectl_manifest" "alloy" {
       source = {
         repoURL        = "https://grafana.github.io/helm-charts"
         chart          = "alloy"
-        targetRevision = "1.5.0" # 🚀 Updated
+        targetRevision = "1.5.1" # 🚀 Updated
         helm = {
           values = file("${path.module}/../k8s/values/alloy.yaml")
         }
