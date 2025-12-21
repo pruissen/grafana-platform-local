@@ -78,13 +78,13 @@ resource "helm_release" "argocd" {
 # 4. SHARED SECRETS & CREDENTIALS
 # -------------------------------------------------------------------
 
-# A. Generate Random Password (Shared by all components)
+# A. Generate Random Password
 resource "random_password" "minio_root_password" {
   length  = 24
   special = false
 }
 
-# B. Secret for MinIO Server (Used by Loki's Embedded MinIO)
+# B. Secret for MinIO Server
 resource "kubernetes_secret_v1" "minio_creds" {
   metadata {
     name      = "minio-creds"
@@ -97,7 +97,7 @@ resource "kubernetes_secret_v1" "minio_creds" {
   type = "Opaque"
 }
 
-# C. Secrets for Clients (Mimir, Loki, Tempo) to access MinIO
+# C. Secrets for Clients (S3 Access)
 resource "kubernetes_secret_v1" "mimir_s3_creds" {
   metadata {
     name      = "mimir-s3-credentials"
@@ -134,8 +134,51 @@ resource "kubernetes_secret_v1" "tempo_s3_creds" {
   type = "Opaque"
 }
 
+# D. Secrets for k8s-monitoring (Alloy Authentication)
+resource "kubernetes_secret" "loki_k8s_monitoring" {
+  metadata {
+    name      = "loki-k8s-monitoring"
+    namespace = "observability-prd"
+  }
+
+  data = {
+    username = "admin"
+    password = random_password.minio_root_password.result
+  }
+
+  type = "Opaque"
+}
+
+resource "kubernetes_secret" "prometheus_k8s_monitoring" {
+  metadata {
+    name      = "prometheus-k8s-monitoring"
+    namespace = "observability-prd"
+  }
+
+  data = {
+    username = "admin"
+    password = random_password.minio_root_password.result
+  }
+
+  type = "Opaque"
+}
+
+resource "kubernetes_secret" "tempo_k8s_monitoring" {
+  metadata {
+    name      = "tempo-k8s-monitoring"
+    namespace = "observability-prd"
+  }
+
+  data = {
+    username = "admin"
+    password = random_password.minio_root_password.result
+  }
+
+  type = "Opaque"
+}
+
 # -------------------------------------------------------------------
-# 5. LOKI (Logs + Embedded MinIO)
+# 5. LOKI
 # -------------------------------------------------------------------
 resource "kubectl_manifest" "loki" {
   depends_on = [
@@ -176,7 +219,7 @@ resource "kubectl_manifest" "loki" {
 }
 
 # -------------------------------------------------------------------
-# 6. MIMIR (Metrics - Distributed)
+# 6. MIMIR
 # -------------------------------------------------------------------
 resource "kubectl_manifest" "mimir" {
   depends_on = [
@@ -217,7 +260,7 @@ resource "kubectl_manifest" "mimir" {
 }
 
 # -------------------------------------------------------------------
-# 7. TEMPO (Traces - Monolithic)
+# 7. TEMPO
 # -------------------------------------------------------------------
 resource "kubectl_manifest" "tempo" {
   depends_on = [
@@ -248,7 +291,6 @@ resource "kubectl_manifest" "tempo" {
       source = {
         repoURL        = "https://grafana.github.io/helm-charts"
         chart          = "tempo"
-        # 🚀 UPDATED: Set to 1.24.1 as requested (AppVersion 2.9.0)
         targetRevision = "1.24.1" 
         helm = {
           values = file("${path.module}/../k8s/values/tempo.yaml")
@@ -321,24 +363,51 @@ resource "kubectl_manifest" "grafana" {
 # -------------------------------------------------------------------
 # 9. K8S MONITORING (Replaces Alloy & Kube-State-Metrics)
 # -------------------------------------------------------------------
-resource "helm_release" "k8s_monitoring" {
-  name       = "k8s-monitoring"
-  repository = "https://grafana.github.io/helm-charts"
-  chart      = "k8s-monitoring"
-  # Using v1.0.0+ for the "new structure" values.yaml
-  version    = "1.0.0" 
-  namespace  = "observability-prd"
-
-  values = [
-    file("${path.module}/../k8s/values/k8s-monitoring.yaml")
-  ]
-
+resource "kubectl_manifest" "alloy" {
   depends_on = [
     helm_release.argocd,
     kubectl_manifest.mimir,
     kubectl_manifest.loki,
-    kubectl_manifest.tempo
+    kubectl_manifest.tempo,
+    # Ensure secrets exist before deploying
+    kubernetes_secret.loki_k8s_monitoring,
+    kubernetes_secret.prometheus_k8s_monitoring,
+    kubernetes_secret.tempo_k8s_monitoring
   ]
+  yaml_body = yamlencode({
+    apiVersion = "argoproj.io/v1alpha1"
+    kind       = "Application"
+    metadata = {
+      name       = "k8s-monitoring"
+      namespace  = "argocd-system"
+      finalizers = ["resources-finalizer.argocd.argoproj.io"]
+    }
+    spec = {
+      project = "default"
+      destination = {
+        server    = "https://kubernetes.default.svc"
+        namespace = "observability-prd"
+      }
+      syncPolicy = {
+        automated = {
+          prune    = true
+          selfHeal = true
+        }
+        # ⚠️ FIXED: Enable Server-Side Apply to handle large CRDs
+        syncOptions = [
+          "ServerSideApply=true"
+        ]
+      }
+      source = {
+        repoURL        = "https://grafana.github.io/helm-charts"
+        chart          = "k8s-monitoring"
+        targetRevision = "1.6.1"
+        helm = {
+          values = file("${path.module}/../k8s/values/k8s-monitoring.yaml")
+        }
+      }
+    }
+  })
 }
 
 # -------------------------------------------------------------------
@@ -346,7 +415,7 @@ resource "helm_release" "k8s_monitoring" {
 # -------------------------------------------------------------------
 resource "kubectl_manifest" "astronomy_shop" {
   depends_on = [
-    helm_release.k8s_monitoring, # Depends on the new monitoring stack
+    kubectl_manifest.alloy, # Waits for the new monitoring stack
     kubernetes_namespace.devteam_1
   ]
   yaml_body = yamlencode({
