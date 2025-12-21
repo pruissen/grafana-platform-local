@@ -285,7 +285,7 @@ def bootstrap():
         if org_id:
             create_datasource(org_id, org['name'], "prometheus", "Mimir", "http://mimir-nginx.observability-prd.svc:80/prometheus", org['tenant_id'])
             create_datasource(org_id, org['name'], "loki", "Loki", "http://loki-gateway.observability-prd.svc:80", org['tenant_id'])
-            create_datasource(org_id, org['name'], "tempo", "Tempo", "http://tempo.observability-prd.svc:3100", org['tenant_id'])
+            create_datasource(org_id, org['name'], "tempo", "Tempo", "http://tempo.observability-prd.svc:3200", org['tenant_id'])
             token = create_service_account_and_token(org_id, org['sa_name'])
             if token:
                 results[org['name']] = {"org_id": org_id, "tenant_id": org['tenant_id'], "token": token}
