@@ -1,6 +1,4 @@
-==================================================
-FILE: ./k8s/values/astronomy-shop.yaml
-==================================================
+
 # k8s/values/astronomy-shop.yaml
 # Compatible with opentelemetry-demo chart v0.31.0
 
