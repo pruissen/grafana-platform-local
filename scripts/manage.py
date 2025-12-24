@@ -15,27 +15,25 @@ OUTPUT_FILE = "bootstrap-results.json"
 # --- DASHBOARD MAPPING ---
 DASHBOARD_GROUPS = [
     {
-        # 1. SHARED INFRASTRUCTURE
+        # 1. SHARED INFRASTRUCTURE (Visible to Platform & Devs)
         "target_orgs": ["platform-k8s", "platform-obs", "devteam-1"],
         "dashboards": [
-            # Removed: 315 (K8s Nodes), 13332 (KSM), 15760 (Overview)
-            # Added: 18680 (The standard "Latest" Global View)
             {"id": "18680", "type": "id", "folder": "Kubernetes", "name": "k8s-dashboard (latest)"},
             {"id": "14584", "type": "id", "folder": "GitOps", "name": "ArgoCD"}
         ]
     },
     {
-        # 2. OBSERVABILITY STACK
+        # 2. OBSERVABILITY STACK (Platform Only)
         "target_orgs": ["platform-obs"],
         "dashboards": [
             {"id": "13639", "type": "id", "folder": "Observability", "name": "Loki Logs"},
             {"id": "15132", "type": "id", "folder": "Observability", "name": "Tempo Operational"},
-            # Removed: 18671 (Alloy Overview)
-            {"id": "3590", "type": "id", "folder": "Observability", "name": "Grafana Internals"}
+            {"id": "3590", "type": "id", "folder": "Observability", "name": "Grafana Internals"},
+            {"id": "19967", "type": "id", "folder": "Observability", "name": "Grafana Alloy"}
         ]
     },
     {
-        # 3. APPLICATIONS (OTel Demo)
+        # 3. APPLICATIONS (DevTeam Only)
         "target_orgs": ["devteam-1"],
         "dashboards": [
             {
@@ -44,7 +42,6 @@ DASHBOARD_GROUPS = [
                 "type": "url",
                 "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-demo/refs/heads/main/src/grafana/provisioning/dashboards/demo/demo-dashboard.json"
             },
-            # Removed: "OTel Demo: APM / Services"
             {
                 "name": "OTel Demo: Exemplars",
                 "folder": "Applications",
@@ -138,19 +135,16 @@ def resolve_inputs(dashboard_json):
     """
     Dynamically maps the dashboard's required inputs (from __inputs)
     to our actual Datasource names (Mimir, Loki, Tempo).
-    Includes handling for specific variable names like VAR_DATASOURCE.
     """
     inputs = []
     if "__inputs" not in dashboard_json:
         return inputs
 
     for req_input in dashboard_json["__inputs"]:
-        # We only care about datasource inputs
         if req_input.get("type") == "datasource":
             plugin_id = req_input.get("pluginId")
             input_name = req_input.get("name")
             
-            # 1. Determine target DB based on Plugin ID
             db_name = None
             if plugin_id == "prometheus":
                 db_name = "Mimir"
@@ -159,8 +153,6 @@ def resolve_inputs(dashboard_json):
             elif plugin_id == "tempo":
                 db_name = "Tempo"
             
-            # 2. Handle known legacy variable names specifically
-            # Some dashboards hardcode 'VAR_DATASOURCE' or 'DS_PROMETHEUS'
             if input_name in ["VAR_DATASOURCE", "DS_PROMETHEUS"]:
                 db_name = "Mimir"
 
@@ -181,7 +173,6 @@ def import_dashboards():
         for dashboard_def in group['dashboards']:
             print(f"📦 Preparing Dashboard: {dashboard_def['name']}")
             
-            # 1. Download
             data = None
             if dashboard_def['type'] == 'url':
                 data = get_dashboard_json(dashboard_def['url'], is_url=True)
@@ -192,15 +183,11 @@ def import_dashboards():
                 print("      ❌ Failed to download definition. Skipping.")
                 continue
 
-            # 2. SANITIZE JSON for Import
-            # CRITICAL: Remove 'id' so Grafana treats it as a new/update by UID
             if 'id' in data:
                 data['id'] = None
             
-            # 3. Resolve Inputs dynamically
             import_inputs = resolve_inputs(data)
 
-            # 4. Distribute
             for org_name in group['target_orgs']:
                 org_id = get_org_id_by_name(org_name)
                 
@@ -244,9 +231,19 @@ def create_datasource(org_id, org_name, ds_type, name, url, tenant_id):
         "name": name, "type": ds_type, "url": url, "access": "proxy", "isDefault": True,
         "jsonData": {}, "secureJsonData": {}
     }
+    
+    # --- 🔥 MANAGEMENT ZONE LOGIC (Federated Access) 🔥 ---
+    # We federate access so teams can see their own data + shared infrastructure (platform-k8s).
+    final_tenant_id = tenant_id
+    federated_orgs = ["devteam-1", "platform-obs"]
+
+    if org_name in federated_orgs and ds_type in ["prometheus", "loki", "tempo"]:
+        final_tenant_id = f"{tenant_id}|platform-k8s"
+        print(f"      ✨ Federated Access Active: {org_name} -> {final_tenant_id}")
+
     if ds_type in ["prometheus", "loki", "tempo"]:
         payload["jsonData"]["httpHeaderName1"] = "X-Scope-OrgID"
-        payload["secureJsonData"]["httpHeaderValue1"] = tenant_id
+        payload["secureJsonData"]["httpHeaderValue1"] = final_tenant_id
 
     existing = requests.get(f"{GRAFANA_URL}/api/datasources/name/{name}", auth=get_auth(), headers=headers)
     if existing.status_code == 200:
