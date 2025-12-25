@@ -2,6 +2,8 @@
 
 A production-ready, multi-tenant observability platform running locally on **K3s**. It uses **Terraform** for Infrastructure-as-Code and **ArgoCD** for GitOps deployment.
 
+![K8s Dashboard](assets/images/k8s-dashboard.png)
+
 ## 🏗 Architecture
 
 | Component | Role | Details |
@@ -9,11 +11,11 @@ A production-ready, multi-tenant observability platform running locally on **K3s
 | **K3s** | Cluster | Lightweight Kubernetes distribution. |
 | **ArgoCD** | GitOps | Manages all application deployments. |
 | **MinIO** | Storage | S3-compatible backend for Mimir, Loki, and Tempo. |
-| **Mimir** | Metrics | Multi-tenant Prometheus-compatible storage. |
-| **Loki** | Logs | Multi-tenant Log aggregation (Single Binary). |
-| **Tempo** | Traces | Multi-tenant Distributed Tracing. |
-| **Alloy** | Collector | "Traffic Cop" router that tags data with Tenant IDs. |
-| **Grafana** | Visuals | Multi-org setup with automated datasource provisioning. |
+| **Mimir** | Metrics | Multi-tenant Prometheus-compatible storage (Distributed). |
+| **Loki** | Logs | Multi-tenant Log aggregation (SimpleScalable Mode). |
+| **Tempo** | Traces | Multi-tenant Distributed Tracing (Monolithic). |
+| **Alloy** | Collector | Split architecture: Node (DaemonSet) + Cluster (Deployment) + App Gateway (OTLP). |
+| **Grafana** | Visuals | Multi-org setup with automated datasource provisioning & Federation. |
 
 ---
 
@@ -36,7 +38,7 @@ make all
 2.  Deploys **ArgoCD**.
 3.  Provisions **MinIO** (S3) & generates credentials.
 4.  Deploys **Mimir, Loki, Tempo** (configured for S3 & Multi-tenancy).
-5.  Deploys **Grafana Alloy** (Configured as a multi-tenant router).
+5.  Deploys **Grafana Alloy** (Node, Cluster, and App Gateway).
 6.  Deploys **Grafana**.
 7.  **Bootstraps Multi-tenancy:** Runs `scripts/manage.py` to create Organizations and Datasources automatically.
 
@@ -44,18 +46,25 @@ make all
 
 ## 🔐 Multi-Tenancy & Access
 
-This stack enforces strict multi-tenancy. Data is isolated by the `X-Scope-OrgID` header.
+This stack enforces strict multi-tenancy at the storage layer but allows **Federated Views** at the query layer (Dynatrace-style management zones).
 
 ### Organizations
 | Org Name | Tenant ID | Description |
 | :--- | :--- | :--- |
 | **Main Org** | `anonymous` | Admin view. |
 | **platform-k8s** | `platform-k8s` | K8s System metrics (Nodes, Kubelet) & Pod logs. |
+| **platform-obs** | `platform-obs` | Internal monitoring of the Observability stack itself. |
 | **devteam-1** | `devteam-1` | Application data (Traces/Metrics) from the Demo Shop. |
 
 ### Routing Logic (Alloy)
-* **System Data:** Alloy scrapes `kube-system` & `observability-prd` -> tags as `platform-k8s`.
-* **App Data:** Alloy listens on OTLP ports -> tags as `devteam-1`.
+* **Alloy Node:** Scrapes Host metrics & Kubelet -> tags as `platform-k8s`.
+* **Alloy Cluster:** Scrapes K8s Events, Kube State Metrics -> tags as `platform-k8s`.
+* **Alloy App Gateway:** Receives OTLP data -> tags as `devteam-1` (or other app tenants).
+
+### Federated Access (Management Zones)
+The `devteam-1` and `platform-obs` organizations are configured with **Federated Datasources**.
+* **Header:** `X-Scope-OrgID: devteam-1|platform-k8s`
+* **Effect:** When a developer logs in, they see their application data **AND** the underlying infrastructure metrics (CPU/Memory of nodes) in a single view, without switching organizations.
 
 ---
 
@@ -92,9 +101,11 @@ make uninstall-loki
 make install-loki
 ```
 
-**Uninstall Alloy (Collector):**
+**Uninstall Alloy:**
 ```bash
-make uninstall-alloy
+make uninstall-alloy-node
+make uninstall-alloy-cluster
+make uninstall-alloy-app-gateway
 ```
 
 ---
@@ -106,7 +117,7 @@ make uninstall-alloy
 ├── k8s/
 │   └── values/              # Helm Chart Values (Mimir, Loki, Tempo, Alloy, etc.)
 ├── scripts/
-│   ├── manage.py            # Python script for Grafana API automation
+│   ├── manage.py            # Python script for Grafana API automation & Federation
 │   ├── portforward-*.sh     # Auto-healing access scripts
 │   └── setup-virtual-disk.sh
 ├── terraform/
@@ -114,25 +125,6 @@ make uninstall-alloy
 ├── Makefile                 # Master control plane
 └── README.md
 ```
-
----
-
-## ⚠️ Troubleshooting
-
-**"Too many unhealthy instances" in Grafana?**
-* Mimir/Loki/Tempo are configured with `replication_factor: 1` for this local single-node setup.
-* Ensure pods are running: `kubectl get pods -n observability-prd`.
-* If stuck, restart the component: `kubectl delete pod -n observability-prd -l app.kubernetes.io/name=mimir`.
-
-**"Request signature does not match" (MinIO)?**
-* MinIO credentials on disk don't match the Secret (likely due to Terraform regenerating the password while MinIO kept old data).
-* Fix: `make uninstall-prereqs` (wipes PVC data) -> `make install-prereqs`.
-
-**Alloy Error "illegal character U+0023"?**
-* Use `//` for comments in Alloy configuration files (River syntax), not `#`.
-
-**"Unable to connect with Loki"?**
-* Ensure `auth_enabled: true` is set in Loki values and that Grafana Datasources are injecting the `X-Scope-OrgID` header (handled by `manage.py`).
 
 ---
 
