@@ -27,7 +27,6 @@ DASHBOARD_GROUPS = [
         "dashboards": [
             {"id": "18680", "type": "id", "folder": "Kubernetes", "name": "k8s-dashboard (latest)"},
             {"id": "14584", "type": "id", "folder": "GitOps", "name": "ArgoCD"},
-            # ✅ ADDED: Kubernetes Global View (ID 15661)
             {"id": "15661", "type": "id", "folder": "Kubernetes", "name": "Kubernetes / Views / Global"} 
         ]
     },
@@ -38,23 +37,26 @@ DASHBOARD_GROUPS = [
             {"id": "13639", "type": "id", "folder": "Observability", "name": "Loki Logs"},
             {"id": "15132", "type": "id", "folder": "Observability", "name": "Tempo Operational"},
             {"id": "3590", "type": "id", "folder": "Observability", "name": "Grafana Internals"},
-            # 🗑️ REMOVED: DCGM / NVIDIA Dashboards
             
-            # Alloy Dashboards
-            {"type": "url", "folder": "Alloy", "name": "Alloy Cluster Node", "url": "https://raw.githubusercontent.com/pruissen/grafana-platform-microk8s/alloy-improvements/dashboards/alloy/alloy-cluster-node.json"},
-            {"type": "url", "folder": "Alloy", "name": "Alloy Cluster Overview", "url": "https://raw.githubusercontent.com/pruissen/grafana-platform-microk8s/alloy-improvements/dashboards/alloy/alloy-cluster-overview.json"},
-            {"type": "url", "folder": "Alloy", "name": "Alloy Controller", "url": "https://raw.githubusercontent.com/pruissen/grafana-platform-microk8s/alloy-improvements/dashboards/alloy/alloy-controller.json"},
-            {"type": "url", "folder": "Alloy", "name": "Alloy Logs", "url": "https://raw.githubusercontent.com/pruissen/grafana-platform-microk8s/alloy-improvements/dashboards/alloy/alloy-logs.json"},
-            {"type": "url", "folder": "Alloy", "name": "Alloy Loki", "url": "https://raw.githubusercontent.com/pruissen/grafana-platform-microk8s/alloy-improvements/dashboards/alloy/alloy-loki.json"},
-            {"type": "url", "folder": "Alloy", "name": "Alloy OpenTelemetry", "url": "https://raw.githubusercontent.com/pruissen/grafana-platform-microk8s/alloy-improvements/dashboards/alloy/alloy-opentelemetry.json"},
-            {"type": "url", "folder": "Alloy", "name": "Alloy Remote Write", "url": "https://raw.githubusercontent.com/pruissen/grafana-platform-microk8s/alloy-improvements/dashboards/alloy/alloy-prometheus-remote-write.json"},
-            {"type": "url", "folder": "Alloy", "name": "Alloy Resources", "url": "https://raw.githubusercontent.com/pruissen/grafana-platform-microk8s/alloy-improvements/dashboards/alloy/alloy-resources.json"}
+            # Alloy Dashboards (Updated Links)
+            {"type": "url", "folder": "Alloy", "name": "Alloy Cluster Node", "url": "https://raw.githubusercontent.com/pruissen/grafana-platform-local/refs/heads/main/dashboards/alloy/alloy-cluster-node.json"},
+            {"type": "url", "folder": "Alloy", "name": "Alloy Cluster Overview", "url": "https://raw.githubusercontent.com/pruissen/grafana-platform-local/refs/heads/main/dashboards/alloy/alloy-cluster-overview.json"},
+            {"type": "url", "folder": "Alloy", "name": "Alloy Controller", "url": "https://raw.githubusercontent.com/pruissen/grafana-platform-local/refs/heads/main/dashboards/alloy/alloy-controller.json"},
+            {"type": "url", "folder": "Alloy", "name": "Alloy Logs", "url": "https://raw.githubusercontent.com/pruissen/grafana-platform-local/refs/heads/main/dashboards/alloy/alloy-logs.json"},
+            {"type": "url", "folder": "Alloy", "name": "Alloy Loki", "url": "https://raw.githubusercontent.com/pruissen/grafana-platform-local/refs/heads/main/dashboards/alloy/alloy-loki.json"},
+            {"type": "url", "folder": "Alloy", "name": "Alloy OpenTelemetry", "url": "https://raw.githubusercontent.com/pruissen/grafana-platform-local/refs/heads/main/dashboards/alloy/alloy-opentelemetry.json"},
+            {"type": "url", "folder": "Alloy", "name": "Alloy Remote Write", "url": "https://raw.githubusercontent.com/pruissen/grafana-platform-local/refs/heads/main/dashboards/alloy/alloy-prometheus-remote-write.json"},
+            {"type": "url", "folder": "Alloy", "name": "Alloy Resources", "url": "https://raw.githubusercontent.com/pruissen/grafana-platform-local/refs/heads/main/dashboards/alloy/alloy-resources.json"}
         ]
     },
     {
         # 3. APPLICATIONS (DevTeam Only)
         "target_orgs": ["devteam-1"],
         "dashboards": [
+            # Faro (Frontend Observability)
+            {"id": "17947", "type": "id", "folder": "Applications", "name": "Faro Web SDK (Frontend)"},
+
+            # OpenTelemetry Demo
             {"name": "OTel Demo: General", "folder": "Applications", "type": "url", "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-demo/refs/heads/main/src/grafana/provisioning/dashboards/demo/demo-dashboard.json"},
             {"name": "OTel Demo: Exemplars", "folder": "Applications", "type": "url", "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-demo/refs/heads/main/src/grafana/provisioning/dashboards/demo/exemplars-dashboard.json"},
             {"name": "OTel Demo: Linux Metrics", "folder": "Applications", "type": "url", "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-demo/refs/heads/main/src/grafana/provisioning/dashboards/demo/linux-dashboard.json"},

@@ -1,8 +1,8 @@
 .PHONY: all install-k3s install-argocd install-prereqs install-mimir install-loki install-tempo install-grafana \
-        install-node-exporter install-alloy-node install-alloy-cluster install-alloy-app-gateway install-demo \
+        install-node-exporter install-alloy-node install-alloy-cluster install-alloy-app-gateway install-faro install-demo \
         install-all uninstall-all remove-all clean \
-        clean-mimir clean-loki clean-tempo clean-grafana clean-alloy clean-demo \
-        uninstall-alloy-node uninstall-alloy-cluster uninstall-alloy-app-gateway uninstall-node-exporter \
+        clean-mimir clean-loki clean-tempo clean-grafana clean-alloy clean-faro clean-demo \
+        uninstall-alloy-node uninstall-alloy-cluster uninstall-alloy-app-gateway uninstall-faro uninstall-node-exporter \
         bootstrap forward nuke clean-legacy-alloy
 
 USER_NAME ?= $(shell whoami)
@@ -31,9 +31,9 @@ endef
 # ---------------------------------------------------------
 all: install-k3s install-argocd install-all
 
-install-all: install-prereqs install-loki install-mimir install-tempo install-grafana bootstrap install-node-exporter install-alloy-node install-alloy-cluster install-alloy-app-gateway install-demo 
+install-all: install-prereqs install-loki install-mimir install-tempo install-grafana bootstrap install-node-exporter install-alloy-node install-alloy-cluster install-alloy-app-gateway install-faro install-demo 
 
-uninstall-all: uninstall-demo uninstall-alloy-app-gateway uninstall-alloy-cluster uninstall-alloy-node uninstall-node-exporter uninstall-grafana uninstall-tempo uninstall-mimir uninstall-loki uninstall-prereqs
+uninstall-all: uninstall-demo uninstall-faro uninstall-alloy-app-gateway uninstall-alloy-cluster uninstall-alloy-node uninstall-node-exporter uninstall-grafana uninstall-tempo uninstall-mimir uninstall-loki uninstall-prereqs
 
 remove-all: uninstall-all nuke
 
@@ -253,6 +253,27 @@ uninstall-alloy-app-gateway:
 	@echo "--- Uninstalling Alloy App Gateway ---"
 	cd terraform && terraform destroy -auto-approve -target=kubectl_manifest.alloy_app_gateway || true
 
+# 4. Alloy Faro (Frontend Observability)
+install-faro: clean-legacy-alloy
+	@echo "--- Installing Alloy Faro (Frontend) ---"
+	cd terraform && terraform apply -auto-approve -target=kubectl_manifest.alloy_faro
+	@echo "⏳ Waiting for Alloy Faro definition..."
+	@timeout=60; until kubectl get deployment alloy-faro -n observability-prd >/dev/null 2>&1; do \
+		echo "   ...waiting for ArgoCD to create resource..."; \
+		sleep 2; \
+	done
+	@echo "⏳ Waiting for Alloy Faro rollout..."
+	@kubectl rollout status deployment/alloy-faro -n observability-prd --timeout=120s
+	@echo "✅ Alloy Faro Ready."
+
+uninstall-faro:
+	@echo "--- Uninstalling Alloy Faro ---"
+	cd terraform && terraform destroy -auto-approve -target=kubectl_manifest.alloy_faro || true
+
+clean-faro:
+	@echo "🧹 Cleaning up Faro Resources..."
+	@kubectl delete all -n observability-prd -l app.kubernetes.io/instance=alloy-faro --force --grace-period=0 2>/dev/null || true
+
 clean-alloy:
 	@echo "🧹 Cleaning up ALL Alloy Resources..."
 	# Clean Node
@@ -261,6 +282,8 @@ clean-alloy:
 	@kubectl delete all -n observability-prd -l app.kubernetes.io/instance=alloy-cluster --force --grace-period=0 2>/dev/null || true
 	# Clean Gateway
 	@kubectl delete all -n observability-prd -l app.kubernetes.io/instance=alloy-app-gateway --force --grace-period=0 2>/dev/null || true
+	# Clean Faro
+	@kubectl delete all -n observability-prd -l app.kubernetes.io/instance=alloy-faro --force --grace-period=0 2>/dev/null || true
 	# Safety cleanup for old/monolithic deployments
 	@kubectl delete daemonset -n observability-prd alloy --force --grace-period=0 2>/dev/null || true
 	@kubectl delete deployment -n observability-prd alloy --force --grace-period=0 2>/dev/null || true

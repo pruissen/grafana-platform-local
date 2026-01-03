@@ -1,0 +1,92 @@
+# k8s/values/alloy-faro.yaml
+# ROLE: Dedicated Collector for Grafana Faro (Frontend Observability)
+
+fullnameOverride: alloy-faro
+
+controller:
+  type: deployment
+  replicas: 1
+  resources: 
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 512Mi }
+
+service:
+  enabled: true
+  type: ClusterIP
+
+rbac:
+  create: true
+
+alloy:
+  clustering:
+    enabled: false
+
+  # Expose port for Faro Receiver
+  extraPorts:
+    - name: faro-http
+      port: 12347
+      targetPort: 12347
+      protocol: TCP
+
+  configMap:
+    content: |
+      // 1. FARO RECEIVER
+      faro.receiver "frontend" {
+        server {
+          listen_address = "0.0.0.0"
+          listen_port    = 12347
+          cors_allowed_origins = ["*"]
+          api_key        = "optional-api-key" 
+        }
+
+        output {
+          // ✅ FIXED: loki.process exports 'receiver', not 'input'
+          logs   = [loki.process.faro.receiver]
+          traces = [otelcol.exporter.otlp.faro.input]
+        }
+      }
+
+      // 2. LOGS PIPELINE (Loki)
+      loki.process "faro" {
+        forward_to = [loki.write.faro.receiver]
+        
+        // Single line map to prevent syntax errors
+        stage.static_labels {
+            values = { "service_name" = "frontend-app", "source" = "faro-web-sdk" }
+        }
+      }
+
+      loki.write "faro" {
+        endpoint {
+          url       = "http://loki-gateway.observability-prd.svc:80/loki/api/v1/push"
+          tenant_id = "devteam-1"
+        }
+      }
+
+      // 3. TRACES PIPELINE (Tempo via OTLP)
+      otelcol.exporter.otlp "faro" {
+        client {
+          endpoint = "tempo.observability-prd.svc.cluster.local:4317"
+          headers  = { "X-Scope-OrgID" = "devteam-1" }
+          tls { insecure = true }
+        }
+      }
+
+      // 4. SELF MONITORING
+      prometheus.scrape "alloy_self" {
+        targets = [{
+          __address__ = "127.0.0.1:12345",
+          cluster     = "k3s-local",
+          namespace   = "observability-prd",
+          job         = "alloy",
+          instance    = "alloy-faro",
+        }]
+        forward_to = [prometheus.remote_write.obs.receiver]
+      }
+
+      prometheus.remote_write "obs" {
+        endpoint {
+          url     = "http://mimir-nginx.observability-prd.svc:80/api/v1/push"
+          headers = { "X-Scope-OrgID" = "platform-obs" }
+        }
+      }

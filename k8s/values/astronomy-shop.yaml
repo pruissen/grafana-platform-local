@@ -1,36 +1,98 @@
-
 # k8s/values/astronomy-shop.yaml
 # Compatible with opentelemetry-demo chart v0.31.0
 
-# 1. Global Configuration
+# -----------------------------------------------------------------------
+# 1. GLOBAL CONFIGURATION
+# -----------------------------------------------------------------------
 default:
   env:
     - name: OTEL_SERVICE_NAME
       value: "astro-demo-app"
+    # ✅ FIXED: Matches the actual Kubernetes Service name created by the Helm chart
     - name: OTEL_COLLECTOR_NAME
-      value: "alloy-app-gateway.observability-prd.svc.cluster.local"
+      value:  "astronomy-shop-otelcol.devteam-1.svc.cluster.local"
     - name: OTEL_RESOURCE_ATTRIBUTES
       value: "service.name=astro-demo-app,space=devteam-1,deployment.environment=production"
 
-# 2. Components
+# -----------------------------------------------------------------------
+# 2. COMPONENTS
+# -----------------------------------------------------------------------
 components:
   loadgenerator:
     enabled: true
     env:
       - name: OTEL_SERVICE_NAME
         value: "astro-demo-app"
+      # ✅ FIXED: Matches the actual Kubernetes Service name
       - name: OTEL_COLLECTOR_NAME
-        value: "alloy-app-gateway.observability-prd.svc.cluster.local"
+        value: "astronomy-shop-otelcol.devteam-1.svc.cluster.local"
       - name: OTEL_RESOURCE_ATTRIBUTES
         value: "service.name=astro-demo-app,space=devteam-1,deployment.environment=production"
-   
+    
   frontendProxy:
     service:
       type: ClusterIP
       port: 8080
 
-# 3. Disable Internal Stack (Use our own Mimir/Loki/Tempo)
-opentelemetry-collector: { enabled: false }
+# -----------------------------------------------------------------------
+# 3. INTERNAL OPENTELEMETRY COLLECTOR (The Chaining Step)
+# -----------------------------------------------------------------------
+opentelemetry-collector:
+  enabled: true
+  
+  # Configure the Internal Collector to forward to Alloy Gateway
+  config:
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: ${env:MY_POD_IP}:4317
+          http:
+            endpoint: ${env:MY_POD_IP}:4318
+
+    processors:
+      batch:
+      resource:
+        attributes:
+          - key: service.namespace
+            value: astronomy-shop
+            action: insert
+
+    exporters:
+      # 1. Export to our Platform Gateway (Alloy)
+      otlp/alloy:
+        endpoint: "alloy-app-gateway.observability-prd.svc.cluster.local:4317"
+        tls:
+          insecure: true
+        headers:
+          # Tag data coming from this collector for easier identification in Alloy
+          X-From-Internal-Collector: "true"
+
+      # 2. ✅ DEBUG EXPORTER (Prints data to stdout for verification)
+      debug:
+        verbosity: detailed
+
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [resource, batch]
+          # ✅ Forward to Alloy AND print to logs
+          exporters: [otlp/alloy, debug]
+        metrics:
+          receivers: [otlp]
+          processors: [resource, batch]
+          # ✅ Forward to Alloy AND print to logs
+          exporters: [otlp/alloy, debug]
+        logs:
+          receivers: [otlp]
+          processors: [resource, batch]
+          # ✅ Forward to Alloy AND print to logs
+          exporters: [otlp/alloy, debug]
+
+# -----------------------------------------------------------------------
+# 4. DISABLE BUNDLED MONITORING STACK
+# -----------------------------------------------------------------------
 jaeger: { enabled: false }
 prometheus: { enabled: false }
 grafana: { enabled: false }

@@ -89,8 +89,10 @@ datasources:
                 query: 'sum(rate(traces_spanmetrics_latency_bucket{$__tags}[5m]))'
           
           # ✅ LINK 3: Service Graph / Node Graph (Mimir)
+          # Explicitly linking the 'mimir' UID fixes the "No datasource selected" error
           serviceMap:
             datasourceUid: 'mimir'
+          
           nodeGraph:
             enabled: true
           

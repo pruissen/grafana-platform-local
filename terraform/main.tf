@@ -485,6 +485,45 @@ resource "kubectl_manifest" "alloy_app_gateway" {
 }
 
 # -------------------------------------------------------------------
+# 12. GRAFANA FARO (Alloy Collector)
+# -------------------------------------------------------------------
+resource "kubectl_manifest" "alloy_faro" {
+  depends_on = [
+    helm_release.argocd, 
+    kubectl_manifest.mimir, 
+    kubectl_manifest.loki,
+    kubectl_manifest.tempo
+  ]
+  yaml_body = yamlencode({
+    apiVersion = "argoproj.io/v1alpha1"
+    kind       = "Application"
+    metadata = {
+      name       = "alloy-faro"
+      namespace  = "argocd-system"
+      finalizers = ["resources-finalizer.argocd.argoproj.io"]
+    }
+    spec = {
+      project = "default"
+      destination = {
+        server    = "https://kubernetes.default.svc"
+        namespace = "observability-prd"
+      }
+      syncPolicy = {
+        automated = { prune = true, selfHeal = true }
+      }
+      source = {
+        repoURL        = "https://grafana.github.io/helm-charts"
+        chart          = "alloy"
+        targetRevision = "1.5.1"
+        helm = {
+          values = file("${path.module}/../k8s/values/alloy-faro.yaml")
+        }
+      }
+    }
+  })
+}
+
+# -------------------------------------------------------------------
 # 11. OTEL DEMO (Astronomy Shop)
 # -------------------------------------------------------------------
 resource "kubectl_manifest" "astronomy_shop" {
