@@ -263,7 +263,7 @@ resource "kubectl_manifest" "tempo" {
       source = {
         repoURL        = "https://grafana.github.io/helm-charts"
         chart          = "tempo"
-        targetRevision = "1.10.1" 
+        targetRevision = "1.24.1" 
         helm = {
           values = file("${path.module}/../k8s/values/tempo.yaml")
         }
@@ -323,7 +323,7 @@ resource "kubectl_manifest" "grafana" {
       source = {
         repoURL        = "https://grafana.github.io/helm-charts"
         chart          = "grafana"
-        targetRevision = "8.5.1"
+        targetRevision = "10.4.3"
         helm = {
           values = file("${path.module}/../k8s/values/grafana.yaml")
         }

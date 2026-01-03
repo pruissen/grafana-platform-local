@@ -54,7 +54,7 @@ DASHBOARD_GROUPS = [
         "target_orgs": ["devteam-1"],
         "dashboards": [
             # Faro (Frontend Observability)
-            {"id": "17766", "type": "id", "folder": "Applications", "name": "Faro Web SDK (Frontend)"},
+            {"id": "17947", "type": "id", "folder": "Applications", "name": "Faro Web SDK (Frontend)"},
 
             # OpenTelemetry Demo
             {"name": "OTel Demo: General", "folder": "Applications", "type": "url", "url": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-demo/refs/heads/main/src/grafana/provisioning/dashboards/demo/demo-dashboard.json"},
@@ -201,7 +201,7 @@ def import_dashboards():
                 except Exception as e:
                     print(f"          ❌ Exception: {e}")
 
-# --- EXISTING FUNCTIONS (bootstrap) ---
+# --- CORE FUNCTIONS (bootstrap) ---
 def create_org(name):
     res = requests.post(f"{GRAFANA_URL}/api/orgs", json={"name": name}, auth=get_auth())
     if res.status_code == 409:
@@ -223,6 +223,51 @@ def create_datasource(org_id, org_name, ds_type, name, url, default_tenant_id):
         print(f"      ✨ Configuring {ds_type} for {org_name}: {final_tenant_id}")
         payload["jsonData"]["httpHeaderName1"] = "X-Scope-OrgID"
         payload["secureJsonData"]["httpHeaderValue1"] = final_tenant_id
+
+    # --- 🛠️ FIX: Link Tempo to Mimir (Service Graph) & Loki (Logs) ---
+    if ds_type == "tempo":
+        try:
+            # 1. Fetch Mimir UID for Service Graph (using 'Mimir' as the name created previously)
+            mimir_res = requests.get(f"{GRAFANA_URL}/api/datasources/name/Mimir", auth=get_auth(), headers=headers)
+            mimir_uid = mimir_res.json().get('uid') if mimir_res.status_code == 200 else None
+
+            # 2. Fetch Loki UID for Traces-to-Logs
+            loki_res = requests.get(f"{GRAFANA_URL}/api/datasources/name/Loki", auth=get_auth(), headers=headers)
+            loki_uid = loki_res.json().get('uid') if loki_res.status_code == 200 else None
+
+            if mimir_uid:
+                payload["jsonData"].update({
+                    "nodeGraph": {"enabled": True},
+                    "serviceMap": {"datasourceUid": mimir_uid},
+                    "search": {"hide": False},
+                    "tracesToMetrics": {
+                        "datasourceUid": mimir_uid,
+                        "spanStartTimeShift": "1h",
+                        "spanEndTimeShift": "-1h",
+                        "tags": [{"key": "service.name", "value": "service"}, {"key": "job"}],
+                        "queries": [{"name": "Sample Rate", "query": "sum(rate(traces_spanmetrics_latency_bucket{$__tags}[5m]))"}]
+                    }
+                })
+            
+            if loki_uid:
+                payload["jsonData"].update({
+                    "tracesToLogsV2": {
+                        "datasourceUid": loki_uid,
+                        "spanStartTimeShift": "1h",
+                        "spanEndTimeShift": "-1h",
+                        "tags": ["job", "instance", "pod", "namespace"],
+                        "filterByTraceID": False,
+                        "filterBySpanID": False,
+                        "customQuery": True,
+                        "query": 'method="${__span.tags.method}"'
+                    }
+                })
+            
+            print(f"      🔗 Tempo Links configured (Mimir: {bool(mimir_uid)}, Loki: {bool(loki_uid)})")
+
+        except Exception as e:
+            print(f"      ⚠️ Error configuring Tempo Links: {e}")
+    # ---------------------------------------------------------------
 
     existing = requests.get(f"{GRAFANA_URL}/api/datasources/name/{name}", auth=get_auth(), headers=headers)
     if existing.status_code == 200:
@@ -254,9 +299,11 @@ def bootstrap():
         print(f"🏢 Processing Org: {org['name']}")
         org_id = create_org(org['name'])
         if org_id:
+            # Order matters: Create Prometheus(Mimir) and Loki first, then Tempo so Tempo can link to them.
             create_datasource(org_id, org['name'], "prometheus", "Mimir", "http://mimir-nginx.observability-prd.svc:80/prometheus", org['tenant_id'])
             create_datasource(org_id, org['name'], "loki", "Loki", "http://loki-gateway.observability-prd.svc:80", org['tenant_id'])
             create_datasource(org_id, org['name'], "tempo", "Tempo", "http://tempo.observability-prd.svc:3100", org['tenant_id'])
+            
             token = create_service_account_and_token(org_id, org['sa_name'])
             if token:
                 results[org['name']] = {"org_id": org_id, "tenant_id": org['tenant_id'], "token": token}
