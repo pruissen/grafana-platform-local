@@ -302,7 +302,7 @@ def bootstrap():
             # Order matters: Create Prometheus(Mimir) and Loki first, then Tempo so Tempo can link to them.
             create_datasource(org_id, org['name'], "prometheus", "Mimir", "http://mimir-nginx.observability-prd.svc:80/prometheus", org['tenant_id'])
             create_datasource(org_id, org['name'], "loki", "Loki", "http://loki-gateway.observability-prd.svc:80", org['tenant_id'])
-            create_datasource(org_id, org['name'], "tempo", "Tempo", "http://tempo.observability-prd.svc:3100", org['tenant_id'])
+            create_datasource(org_id, org['name'], "tempo", "Tempo", "http://tempo.observability-prd.svc:3200", org['tenant_id'])
             
             token = create_service_account_and_token(org_id, org['sa_name'])
             if token:
